@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mattsolo1/grove-anthropic/pkg/models"
 )
 
 // QueryLog represents a single API query log entry
@@ -85,18 +87,18 @@ func (ql *QueryLogger) Log(entry QueryLog) error {
 	return nil
 }
 
-// Long context threshold - requests exceeding this use premium pricing for Sonnet models
-const longContextThreshold int64 = 200_000
-
 // EstimateCost calculates the estimated cost for a given model and token counts
 // Pricing as of Jan 2026 - see https://platform.claude.com/docs/en/about-claude/pricing
 func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
+	// Resolve alias first
+	model = models.ResolveAlias(model)
+
 	var inputPrice, outputPrice float64 // per million tokens
 
 	// Check if this is a Sonnet model eligible for long context pricing
 	isSonnet := strings.Contains(model, "sonnet-4-5") || strings.Contains(model, "sonnet-4.5") ||
 		strings.Contains(model, "sonnet-4") || strings.Contains(model, "sonnet")
-	useLongContextPricing := isSonnet && inputTokens > longContextThreshold
+	useLongContextPricing := isSonnet && inputTokens > models.LongContextThreshold
 
 	switch {
 	// Claude 4.5 models (current)
