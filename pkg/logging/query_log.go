@@ -85,22 +85,72 @@ func (ql *QueryLogger) Log(entry QueryLog) error {
 	return nil
 }
 
+// Long context threshold - requests exceeding this use premium pricing for Sonnet models
+const longContextThreshold int64 = 200_000
+
 // EstimateCost calculates the estimated cost for a given model and token counts
+// Pricing as of Jan 2026 - see https://platform.claude.com/docs/en/about-claude/pricing
 func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
 	var inputPrice, outputPrice float64 // per million tokens
 
-	// Pricing as of Q1 2025
+	// Check if this is a Sonnet model eligible for long context pricing
+	isSonnet := strings.Contains(model, "sonnet-4-5") || strings.Contains(model, "sonnet-4.5") ||
+		strings.Contains(model, "sonnet-4") || strings.Contains(model, "sonnet")
+	useLongContextPricing := isSonnet && inputTokens > longContextThreshold
+
 	switch {
-	case strings.Contains(model, "opus"):
+	// Claude 4.5 models (current)
+	case strings.Contains(model, "opus-4-5") || strings.Contains(model, "opus-4.5"):
+		inputPrice = 5.00
+		outputPrice = 25.00
+	case strings.Contains(model, "sonnet-4-5") || strings.Contains(model, "sonnet-4.5"):
+		if useLongContextPricing {
+			inputPrice = 6.00
+			outputPrice = 22.50
+		} else {
+			inputPrice = 3.00
+			outputPrice = 15.00
+		}
+	case strings.Contains(model, "haiku-4-5") || strings.Contains(model, "haiku-4.5"):
+		inputPrice = 1.00
+		outputPrice = 5.00
+
+	// Claude 4.x legacy models
+	case strings.Contains(model, "opus-4-1") || strings.Contains(model, "opus-4.1"):
+		inputPrice = 15.00
+		outputPrice = 75.00
+	case strings.Contains(model, "opus-4"):
+		inputPrice = 15.00
+		outputPrice = 75.00
+	case strings.Contains(model, "sonnet-4") || strings.Contains(model, "sonnet-3-7") || strings.Contains(model, "sonnet-3.7"):
+		if useLongContextPricing {
+			inputPrice = 6.00
+			outputPrice = 22.50
+		} else {
+			inputPrice = 3.00
+			outputPrice = 15.00
+		}
+
+	// Claude 3.x legacy models
+	case strings.Contains(model, "haiku-3-5") || strings.Contains(model, "haiku-3.5"):
+		inputPrice = 0.80
+		outputPrice = 4.00
+	case strings.Contains(model, "haiku-3") || strings.Contains(model, "haiku"):
+		inputPrice = 0.25
+		outputPrice = 1.25
+	case strings.Contains(model, "opus-3") || strings.Contains(model, "opus"):
 		inputPrice = 15.00
 		outputPrice = 75.00
 	case strings.Contains(model, "sonnet"):
-		inputPrice = 3.00
-		outputPrice = 15.00
-	case strings.Contains(model, "haiku"):
-		inputPrice = 0.25
-		outputPrice = 1.25
-	default: // Default to Sonnet pricing as a safe middle-ground
+		if useLongContextPricing {
+			inputPrice = 6.00
+			outputPrice = 22.50
+		} else {
+			inputPrice = 3.00
+			outputPrice = 15.00
+		}
+
+	default: // Default to Sonnet 4.5 pricing as a safe middle-ground
 		inputPrice = 3.00
 		outputPrice = 15.00
 	}
