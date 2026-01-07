@@ -32,54 +32,17 @@ func uploadFile(ctx context.Context, client *anthropic.Client, filePath string) 
 }
 
 // detectMIMEType returns an appropriate MIME type for a file based on its extension.
+// Note: Anthropic's Files API only supports "text/plain" and "application/pdf".
+// All text-based files are uploaded as text/plain.
 func detectMIMEType(filePath string) string {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
-	case ".txt", ".text":
-		return "text/plain"
-	case ".md", ".markdown":
-		return "text/markdown"
-	case ".json":
-		return "application/json"
-	case ".go":
-		return "text/x-go"
-	case ".py":
-		return "text/x-python"
-	case ".js":
-		return "text/javascript"
-	case ".ts":
-		return "text/typescript"
-	case ".html", ".htm":
-		return "text/html"
-	case ".css":
-		return "text/css"
-	case ".xml":
-		return "text/xml"
-	case ".yaml", ".yml":
-		return "text/yaml"
-	case ".sh":
-		return "text/x-shellscript"
-	case ".rs":
-		return "text/x-rust"
-	case ".java":
-		return "text/x-java"
-	case ".c":
-		return "text/x-c"
-	case ".cpp", ".cc", ".cxx":
-		return "text/x-c++"
-	case ".h", ".hpp":
-		return "text/x-c"
-	case ".rb":
-		return "text/x-ruby"
-	case ".php":
-		return "text/x-php"
-	case ".swift":
-		return "text/x-swift"
-	case ".kt", ".kts":
-		return "text/x-kotlin"
-	case ".scala":
-		return "text/x-scala"
+	case ".pdf":
+		return "application/pdf"
 	default:
+		// All other files are treated as plaintext
+		// The Files API doesn't support specialized MIME types like text/markdown,
+		// text/x-go, application/json, etc.
 		return "text/plain"
 	}
 }
