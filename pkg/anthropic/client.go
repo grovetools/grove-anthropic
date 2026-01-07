@@ -12,10 +12,12 @@ import (
 	"github.com/mattsolo1/grove-anthropic/pkg/config"
 	grovecontext "github.com/mattsolo1/grove-anthropic/pkg/context"
 	"github.com/mattsolo1/grove-anthropic/pkg/logging"
+	"github.com/mattsolo1/grove-anthropic/pkg/models"
 )
 
 // DefaultModel is the default Claude model to use if none is specified.
-const DefaultModel = "claude-sonnet-4-20250514"
+// Exported from models package for centralized management.
+var DefaultModel = models.DefaultModel
 
 // Client wraps the official Anthropic client.
 type Client struct {
@@ -82,6 +84,7 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 }
 
 // generateContentInternal contains the core API call logic.
+// Uses streaming internally to support longer requests (>10 min) with high max_tokens.
 func (c *Client) generateContentInternal(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64) (string, *anthropic.BetaUsage, error) {
 	var contentBlocks []anthropic.BetaContentBlockParamUnion
 
@@ -118,24 +121,36 @@ func (c *Client) generateContentInternal(ctx context.Context, model, prompt, sys
 		}}
 	}
 
-	// Make the API call
-	resp, err := c.client.Beta.Messages.New(ctx, params)
-	if err != nil {
-		return "", nil, fmt.Errorf("anthropic API request failed: %w", err)
-	}
+	// Use streaming API to support longer requests without timeout
+	stream := c.client.Beta.Messages.NewStreaming(ctx, params)
 
-	// Extract the response text from all text blocks
-	var textParts []string
-	for _, block := range resp.Content {
-		if block.Type == "text" {
-			textParts = append(textParts, block.Text)
+	var fullText strings.Builder
+	message := anthropic.BetaMessage{}
+
+	for stream.Next() {
+		event := stream.Current()
+		if err := message.Accumulate(event); err != nil {
+			return "", nil, fmt.Errorf("accumulating stream event: %w", err)
+		}
+
+		// Extract text from deltas
+		switch eventVariant := event.AsAny().(type) {
+		case anthropic.BetaRawContentBlockDeltaEvent:
+			switch deltaVariant := eventVariant.Delta.AsAny().(type) {
+			case anthropic.BetaTextDelta:
+				fullText.WriteString(deltaVariant.Text)
+			}
 		}
 	}
-	responseText := strings.Join(textParts, "")
 
-	if responseText == "" {
-		return "", &resp.Usage, fmt.Errorf("no text content in response")
+	if stream.Err() != nil {
+		return "", nil, fmt.Errorf("stream error: %w", stream.Err())
 	}
 
-	return responseText, &resp.Usage, nil
+	responseText := fullText.String()
+	if responseText == "" {
+		return "", &message.Usage, fmt.Errorf("no text content in response")
+	}
+
+	return responseText, &message.Usage, nil
 }
