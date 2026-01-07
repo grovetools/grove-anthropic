@@ -12,8 +12,12 @@ import (
 func main() {
 	// A list of all E2E scenarios
 	scenarios := []*harness.Scenario{
-		// Basic Scenarios
+		// Basic Scenarios (no API key required)
 		BasicScenario(),
+		// Config Scenarios
+		APIKeyConfigScenario(),
+		// API Scenarios (requires ANTHROPIC_API_KEY, explicit-only)
+		RequestScenario(),
 	}
 
 	// Execute the custom tend application with our scenarios

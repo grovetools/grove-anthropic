@@ -12,6 +12,8 @@ func init() {
 
 	// Add commands
 	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newRequestCmd())
+	rootCmd.AddCommand(newConfigCmd())
 }
 
 func Execute() error {

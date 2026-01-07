@@ -3,11 +3,15 @@ package anthropic
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/mattsolo1/grove-anthropic/pkg/config"
+	grovecontext "github.com/mattsolo1/grove-anthropic/pkg/context"
+	"github.com/mattsolo1/grove-anthropic/pkg/logging"
 )
 
 // DefaultModel is the default Claude model to use if none is specified.
@@ -38,12 +42,53 @@ func NewClient(apiKeyOverride string) (*Client, error) {
 
 // GenerateContent sends a request to the Anthropic API with context files.
 func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64) (string, *anthropic.BetaUsage, error) {
+	startTime := time.Now()
+	requestID := os.Getenv("GROVE_REQUEST_ID")
+	contextInfo := grovecontext.GetContextInfo("")
+	caller := grovecontext.GetCaller()
+
+	// Execute the actual API call
+	responseText, usage, err := c.generateContentInternal(ctx, model, prompt, systemPrompt, contextFiles, maxTokens)
+
+	// Log the request (success or failure)
+	logEntry := logging.QueryLog{
+		Timestamp:    startTime,
+		RequestID:    requestID,
+		Model:        model,
+		ResponseTime: time.Since(startTime).Seconds(),
+		Success:      err == nil,
+		WorkingDir:   contextInfo.WorkingDir,
+		GitRepo:      contextInfo.GitRepo,
+		GitBranch:    contextInfo.GitBranch,
+		GitCommit:    contextInfo.GitCommit,
+		Caller:       caller,
+	}
+
+	if usage != nil {
+		logEntry.InputTokens = usage.InputTokens
+		logEntry.OutputTokens = usage.OutputTokens
+		logEntry.EstimatedCost = logging.EstimateCost(model, usage.InputTokens, usage.OutputTokens)
+	}
+
+	if err != nil {
+		logEntry.Error = err.Error()
+	}
+
+	if logErr := logging.GetLogger().Log(logEntry); logErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write to query log: %v\n", logErr)
+	}
+
+	return responseText, usage, err
+}
+
+// generateContentInternal contains the core API call logic.
+func (c *Client) generateContentInternal(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64) (string, *anthropic.BetaUsage, error) {
 	var contentBlocks []anthropic.BetaContentBlockParamUnion
 
-	// 1. Add the text prompt
+	// Add the text prompt
 	contentBlocks = append(contentBlocks, anthropic.NewBetaTextBlock(prompt))
 
-	// 2. Upload context files and add them as document blocks
+	// Upload context files and add them as document blocks
 	for _, filePath := range contextFiles {
 		metadata, err := uploadFile(ctx, &c.client, filePath)
 		if err != nil {
@@ -55,7 +100,7 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 		}))
 	}
 
-	// 3. Construct the message parameters
+	// Construct the message parameters
 	params := anthropic.BetaMessageNewParams{
 		Model:     anthropic.Model(model),
 		MaxTokens: maxTokens,
@@ -65,7 +110,7 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 		Betas: []anthropic.AnthropicBeta{anthropic.AnthropicBetaFilesAPI2025_04_14},
 	}
 
-	// 4. Add system prompt if provided
+	// Add system prompt if provided
 	if systemPrompt != "" {
 		params.System = []anthropic.BetaTextBlockParam{{
 			Type: "text",
@@ -73,13 +118,13 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 		}}
 	}
 
-	// 5. Make the API call
+	// Make the API call
 	resp, err := c.client.Beta.Messages.New(ctx, params)
 	if err != nil {
 		return "", nil, fmt.Errorf("anthropic API request failed: %w", err)
 	}
 
-	// 6. Extract the response text from all text blocks
+	// Extract the response text from all text blocks
 	var textParts []string
 	for _, block := range resp.Content {
 		if block.Type == "text" {
