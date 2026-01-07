@@ -1,0 +1,6 @@
+name: grove-anthropic
+description: Tools for using Anthropic/Claude API plaform
+type: go
+binary:
+  name: grove-anthropic
+  path: ./bin/grove-anthropic
