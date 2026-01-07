@@ -89,19 +89,33 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 		r.logger.Blank()
 	}
 
-	// Collect all context files to be uploaded
+	// Collect all context files to be uploaded, deduplicating by absolute path
+	seen := make(map[string]bool)
+	addFile := func(path string) {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			absPath = path
+		}
+		if !seen[absPath] {
+			seen[absPath] = true
+			allContextFiles = append(allContextFiles, path)
+		}
+	}
+
 	if _, err := os.Stat(hotContextFile); err == nil {
-		allContextFiles = append(allContextFiles, hotContextFile)
+		addFile(hotContextFile)
 	}
 	if _, err := os.Stat(coldContextFile); err == nil {
-		allContextFiles = append(allContextFiles, coldContextFile)
+		addFile(coldContextFile)
 	}
-	allContextFiles = append(allContextFiles, options.ContextFiles...)
+	for _, f := range options.ContextFiles {
+		addFile(f)
+	}
 
 	// Also check for CLAUDE.md in the working directory
 	claudePath := filepath.Join(workDir, "CLAUDE.md")
 	if _, err := os.Stat(claudePath); err == nil {
-		allContextFiles = append(allContextFiles, claudePath)
+		addFile(claudePath)
 		r.logger.Info(fmt.Sprintf("Including CLAUDE.md: %s", claudePath))
 	}
 
