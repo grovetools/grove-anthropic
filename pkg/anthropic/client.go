@@ -13,11 +13,15 @@ import (
 	grovecontext "github.com/mattsolo1/grove-anthropic/pkg/context"
 	"github.com/mattsolo1/grove-anthropic/pkg/logging"
 	"github.com/mattsolo1/grove-anthropic/pkg/models"
+	corelogging "github.com/mattsolo1/grove-core/logging"
 )
 
 // DefaultModel is the default Claude model to use if none is specified.
 // Exported from models package for centralized management.
 var DefaultModel = models.DefaultModel
+
+// ulog is the unified logger for this package
+var ulog = corelogging.NewUnifiedLogger("grove-anthropic")
 
 // Client wraps the official Anthropic client.
 type Client struct {
@@ -77,7 +81,7 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 	}
 
 	if logErr := logging.GetLogger().Log(logEntry); logErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to write to query log: %v\n", logErr)
+		ulog.Warn("Failed to write to query log").Err(logErr).Log(ctx)
 	}
 
 	return responseText, usage, err

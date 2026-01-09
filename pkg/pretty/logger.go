@@ -4,22 +4,20 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	corelogging "github.com/mattsolo1/grove-core/logging"
 	"github.com/mattsolo1/grove-core/tui/theme"
-	"github.com/sirupsen/logrus"
 )
 
-// Logger is a wrapper around the grove-core PrettyLogger with Anthropic-specific helpers.
+// Logger is a wrapper around the grove-core UnifiedLogger with Anthropic-specific helpers.
 type Logger struct {
 	*corelogging.PrettyLogger
+	ulog   *corelogging.UnifiedLogger
 	writer io.Writer
 	theme  *theme.Theme
-	log    *logrus.Entry
 }
 
 // TokenFields represents token usage metrics with verbosity levels
@@ -40,19 +38,9 @@ type ModelFields struct {
 func New() *Logger {
 	return &Logger{
 		PrettyLogger: corelogging.NewPrettyLogger(),
+		ulog:         corelogging.NewUnifiedLogger("grove-anthropic"),
 		writer:       corelogging.GetGlobalOutput(),
 		theme:        theme.DefaultTheme,
-		log:          corelogging.NewLogger("grove-anthropic"),
-	}
-}
-
-// NewWithLogger creates a new logger with a specific structured logging backend.
-func NewWithLogger(log *logrus.Entry) *Logger {
-	return &Logger{
-		PrettyLogger: corelogging.NewPrettyLogger(),
-		writer:       corelogging.GetGlobalOutput(),
-		theme:        theme.DefaultTheme,
-		log:          log,
 	}
 }
 
@@ -60,20 +48,19 @@ func NewWithLogger(log *logrus.Entry) *Logger {
 func NewWithWriter(w io.Writer) *Logger {
 	return &Logger{
 		PrettyLogger: corelogging.NewPrettyLogger().WithWriter(w),
+		ulog:         corelogging.NewUnifiedLogger("grove-anthropic"),
 		writer:       w,
 		theme:        theme.DefaultTheme,
-		log:          corelogging.NewLogger("grove-anthropic"),
 	}
 }
 
 // WorkingDirectoryCtx logs the working directory to the writer from the context
 func (l *Logger) WorkingDirectoryCtx(ctx context.Context, dir string) {
-	writer := corelogging.GetWriter(ctx)
 	pathStyle := lipgloss.NewStyle().Italic(true)
-	fmt.Fprintf(writer, "%s Working directory: %s\n",
-		theme.IconHome,
-		pathStyle.Render(dir))
-	fmt.Fprintln(writer)
+	l.ulog.Info("Working directory").
+		Field("directory", dir).
+		Pretty(fmt.Sprintf("%s Working directory: %s", theme.IconHome, pathStyle.Render(dir))).
+		Log(ctx)
 }
 
 // WorkingDirectory logs the working directory
@@ -123,29 +110,15 @@ func (l *Logger) Success(message string) {
 
 // Error logs an error message
 func (l *Logger) Error(message string) {
-	fmt.Fprintf(l.writer, "%s %s\n",
-		l.theme.Error.Render(theme.IconError),
-		l.theme.Error.Render(message))
+	l.ulog.Error(message).Log(context.Background())
 }
 
 // ModelCtx logs the model being used to the writer from the context
 func (l *Logger) ModelCtx(ctx context.Context, model string) {
-	writer := corelogging.GetWriter(ctx)
-	if l.log != nil {
-		modelFields := ModelFields{Model: model}
-		fields := corelogging.StructToLogrusFields(modelFields)
-		if pc, file, line, ok := runtime.Caller(1); ok {
-			fields["file"] = fmt.Sprintf("%s:%d", file, line)
-			if fn := runtime.FuncForPC(pc); fn != nil {
-				fields["func"] = fn.Name()
-			}
-		}
-		entry := l.log.WithFields(fields)
-		entry.Info("Calling Anthropic API")
-	}
-	fmt.Fprintf(writer, "%s Calling Anthropic API with model: %s\n",
-		theme.IconRobot,
-		model)
+	l.ulog.Info("Calling Anthropic API").
+		Field("model", model).
+		Pretty(fmt.Sprintf("%s Calling Anthropic API with model: %s", theme.IconRobot, model)).
+		Log(ctx)
 }
 
 // Model logs the model being used
@@ -155,8 +128,7 @@ func (l *Logger) Model(model string) {
 
 // UploadProgressCtx logs file upload progress to the writer from the context
 func (l *Logger) UploadProgressCtx(ctx context.Context, message string) {
-	writer := corelogging.GetWriter(ctx)
-	fmt.Fprintf(writer, "%s %s\n", theme.IconRunning, message)
+	l.ulog.Progress(message).Log(ctx)
 }
 
 // UploadProgress logs file upload progress
@@ -166,10 +138,14 @@ func (l *Logger) UploadProgress(message string) {
 
 // UploadComplete logs successful file upload
 func (l *Logger) UploadComplete(filename string, duration time.Duration) {
-	fmt.Fprintf(l.writer, "%s %s %s\n",
-		l.theme.Success.Render(theme.IconSuccess),
-		l.theme.Success.Render(filename),
-		l.theme.Muted.Render(fmt.Sprintf("(%.2fs)", duration.Seconds())))
+	l.ulog.Success("Upload complete").
+		Field("filename", filename).
+		Field("duration_seconds", duration.Seconds()).
+		Pretty(fmt.Sprintf("%s %s %s",
+			l.theme.Success.Render(theme.IconSuccess),
+			l.theme.Success.Render(filename),
+			l.theme.Muted.Render(fmt.Sprintf("(%.2fs)", duration.Seconds())))).
+		Log(context.Background())
 }
 
 // FilesIncludedCtx displays the list of files that will be included in the request
@@ -178,21 +154,27 @@ func (l *Logger) FilesIncludedCtx(ctx context.Context, files []string) {
 		return
 	}
 
-	writer := corelogging.GetWriter(ctx)
-	fmt.Fprintf(writer, "%s Files attached to request:\n", theme.IconFile)
-
 	pathStyle := lipgloss.NewStyle().Italic(true)
+	var prettyLines []string
+	prettyLines = append(prettyLines, fmt.Sprintf("%s Files attached to request:", theme.IconFile))
+
 	for _, file := range files {
 		displayName := file
 		if idx := strings.LastIndex(file, "/"); idx != -1 {
 			displayName = file[idx+1:]
 		}
 		if displayName == "CLAUDE.md" || displayName == "context" || displayName == "cached-context" {
-			fmt.Fprintf(writer, "%s %s\n", l.theme.Highlight.Render(theme.IconBullet), pathStyle.Render(file))
+			prettyLines = append(prettyLines, fmt.Sprintf("%s %s", l.theme.Highlight.Render(theme.IconBullet), pathStyle.Render(file)))
 		} else {
-			fmt.Fprintf(writer, "%s %s\n", l.theme.Highlight.Render(theme.IconBullet), pathStyle.Render(displayName))
+			prettyLines = append(prettyLines, fmt.Sprintf("%s %s", l.theme.Highlight.Render(theme.IconBullet), pathStyle.Render(displayName)))
 		}
 	}
+
+	l.ulog.Info("Files attached to request").
+		Field("files", files).
+		Field("count", len(files)).
+		Pretty(strings.Join(prettyLines, "\n")).
+		Log(ctx)
 }
 
 // FilesIncluded displays the list of files that will be included in the request
@@ -202,28 +184,7 @@ func (l *Logger) FilesIncluded(files []string) {
 
 // TokenUsageCtx displays token usage statistics in a styled box
 func (l *Logger) TokenUsageCtx(ctx context.Context, inputTokens, outputTokens int, responseTime time.Duration, estimatedCost float64) {
-	writer := corelogging.GetWriter(ctx)
-
 	totalTokens := inputTokens + outputTokens
-
-	if l.log != nil {
-		tokenFields := TokenFields{
-			InputTokens:      inputTokens,
-			OutputTokens:     outputTokens,
-			TotalTokens:      totalTokens,
-			ResponseTimeMs:   responseTime.Milliseconds(),
-			EstimatedCostUSD: estimatedCost,
-		}
-		fields := corelogging.StructToLogrusFields(tokenFields)
-		if pc, file, line, ok := runtime.Caller(1); ok {
-			fields["file"] = fmt.Sprintf("%s:%d", file, line)
-			if fn := runtime.FuncForPC(pc); fn != nil {
-				fields["func"] = fn.Name()
-			}
-		}
-		entry := l.log.WithFields(fields)
-		entry.Info("Anthropic Response & Token Summary")
-	}
 
 	divider := l.theme.Muted.Render(strings.Repeat("-", 32))
 	content := []string{
@@ -251,7 +212,15 @@ func (l *Logger) TokenUsageCtx(ctx context.Context, inputTokens, outputTokens in
 		Padding(0, 1)
 
 	box := tokenBox.Render(strings.Join(content, "\n"))
-	fmt.Fprintf(writer, "\n%s Token usage:\n%s\n", theme.IconChart, box)
+
+	l.ulog.Info("Anthropic Response & Token Summary").
+		Field("input_tokens", inputTokens).
+		Field("output_tokens", outputTokens).
+		Field("total_tokens", totalTokens).
+		Field("response_time_ms", responseTime.Milliseconds()).
+		Field("estimated_cost_usd", estimatedCost).
+		Pretty(fmt.Sprintf("%s Token usage:\n%s", theme.IconChart, box)).
+		Log(ctx)
 }
 
 // TokenUsage displays token usage statistics in a styled box
@@ -262,37 +231,49 @@ func (l *Logger) TokenUsage(inputTokens, outputTokens int, responseTime time.Dur
 // ResponseWritten logs successful response write
 func (l *Logger) ResponseWritten(path string) {
 	pathStyle := lipgloss.NewStyle().Foreground(theme.Cyan).Italic(true)
-	fmt.Fprintf(l.writer, "%s %s %s\n",
-		l.theme.Success.Render(theme.IconSuccess),
-		l.theme.Success.Render("Response written to:"),
-		pathStyle.Render(path))
+	l.ulog.Success("Response written").
+		Field("path", path).
+		Pretty(fmt.Sprintf("%s %s %s",
+			l.theme.Success.Render(theme.IconSuccess),
+			l.theme.Success.Render("Response written to:"),
+			pathStyle.Render(path))).
+		Log(context.Background())
 }
 
 // Tip logs a helpful tip
 func (l *Logger) Tip(message string) {
-	fmt.Fprintf(l.writer, "%s\n",
-		l.theme.Info.Render(theme.IconLightbulb+" "+message))
+	l.ulog.Info(message).
+		Icon(theme.IconLightbulb).
+		Pretty(l.theme.Info.Render(theme.IconLightbulb + " " + message)).
+		Log(context.Background())
 }
 
 // Progress logs a progress message
 func (l *Logger) Progress(message string) {
-	fmt.Fprintf(l.writer, "%s\n", message)
+	l.ulog.Progress(message).NoIcon().Pretty(message).Log(context.Background())
 }
 
 // Blank prints a blank line
 func (l *Logger) Blank() {
+	// Keep fmt for blank lines - ulog would add unwanted structure
 	fmt.Fprintln(l.writer)
 }
 
 // Section prints a section header
 func (l *Logger) Section(title string) {
-	fmt.Fprintf(l.writer, "%s\n", l.theme.Header.Render(title))
+	l.ulog.Info(title).
+		Pretty(l.theme.Header.Render(title)).
+		PrettyOnly().
+		Log(context.Background())
 }
 
 // Field prints a labeled field
 func (l *Logger) Field(label string, value interface{}) {
-	fmt.Fprintf(l.writer, "%s %s %v\n",
-		l.theme.Highlight.Render(theme.IconBullet),
-		l.theme.Muted.Render(label+":"),
-		value)
+	l.ulog.Info(label).
+		Field(label, value).
+		Pretty(fmt.Sprintf("%s %s %v",
+			l.theme.Highlight.Render(theme.IconBullet),
+			l.theme.Muted.Render(label+":"),
+			value)).
+		Log(context.Background())
 }

@@ -37,7 +37,7 @@ type RequestRunner struct {
 // NewRequestRunner creates a new RequestRunner instance
 func NewRequestRunner() *RequestRunner {
 	return &RequestRunner{
-		logger: pretty.NewWithLogger(log),
+		logger: pretty.New(),
 	}
 }
 
