@@ -110,7 +110,7 @@ func (l *Logger) Success(message string) {
 
 // Error logs an error message
 func (l *Logger) Error(message string) {
-	l.ulog.Error(message).Log(context.Background())
+	l.ulog.Error(message).Emit()
 }
 
 // ModelCtx logs the model being used to the writer from the context
@@ -145,7 +145,7 @@ func (l *Logger) UploadComplete(filename string, duration time.Duration) {
 			l.theme.Success.Render(theme.IconSuccess),
 			l.theme.Success.Render(filename),
 			l.theme.Muted.Render(fmt.Sprintf("(%.2fs)", duration.Seconds())))).
-		Log(context.Background())
+		Emit()
 }
 
 // FilesIncludedCtx displays the list of files that will be included in the request
@@ -237,7 +237,7 @@ func (l *Logger) ResponseWritten(path string) {
 			l.theme.Success.Render(theme.IconSuccess),
 			l.theme.Success.Render("Response written to:"),
 			pathStyle.Render(path))).
-		Log(context.Background())
+		Emit()
 }
 
 // Tip logs a helpful tip
@@ -245,12 +245,12 @@ func (l *Logger) Tip(message string) {
 	l.ulog.Info(message).
 		Icon(theme.IconLightbulb).
 		Pretty(l.theme.Info.Render(theme.IconLightbulb + " " + message)).
-		Log(context.Background())
+		Emit()
 }
 
 // Progress logs a progress message
 func (l *Logger) Progress(message string) {
-	l.ulog.Progress(message).NoIcon().Pretty(message).Log(context.Background())
+	l.ulog.Progress(message).NoIcon().Pretty(message).Emit()
 }
 
 // Blank prints a blank line
@@ -264,7 +264,7 @@ func (l *Logger) Section(title string) {
 	l.ulog.Info(title).
 		Pretty(l.theme.Header.Render(title)).
 		PrettyOnly().
-		Log(context.Background())
+		Emit()
 }
 
 // Field prints a labeled field
@@ -275,5 +275,5 @@ func (l *Logger) Field(label string, value interface{}) {
 			l.theme.Highlight.Render(theme.IconBullet),
 			l.theme.Muted.Render(label+":"),
 			value)).
-		Log(context.Background())
+		Emit()
 }
