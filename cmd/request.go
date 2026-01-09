@@ -8,8 +8,11 @@ import (
 
 	"github.com/mattsolo1/grove-anthropic/pkg/anthropic"
 	"github.com/mattsolo1/grove-anthropic/pkg/pretty"
+	grovelogging "github.com/mattsolo1/grove-core/logging"
 	"github.com/spf13/cobra"
 )
+
+var requestUlog = grovelogging.NewUnifiedLogger("grove-anthropic.cmd.request")
 
 var (
 	requestModel        string
@@ -87,10 +90,17 @@ func runRequest(cmd *cobra.Command, args []string) error {
 		logger := pretty.New()
 		logger.ResponseWritten(requestOutputFile)
 	} else {
-		fmt.Print(response)
+		// Output the API response to stdout
+		// Use PrettyOnly since this is the primary output, not logging
+		responseOutput := response
 		if !strings.HasSuffix(response, "\n") {
-			fmt.Println()
+			responseOutput = response + "\n"
 		}
+		requestUlog.Info("API response output").
+			Field("response_length", len(response)).
+			Pretty(responseOutput).
+			PrettyOnly().
+			Log(ctx)
 	}
 
 	return nil
