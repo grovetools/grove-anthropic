@@ -1,0 +1,22 @@
+enabled: true
+title: grove-anthropic
+description: A command-line interface for Anthropic's Claude API, with context management and caching features.
+category: LLM Providers
+settings:
+    model: gemini-2.5-pro
+    regeneration_mode: reference
+    rules_file: docs.rules
+    structured_output_file: pkg/docs/docs.json
+    system_prompt: default
+    output_dir: docs
+sections:
+    - name: overview
+      title: Overview
+      order: 1
+      prompt: 01-overview.md
+      output: 01-overview.md
+readme:
+    template: docs/README.md.tpl
+    output: README.md
+    source_section: overview
+    generate_toc: true
