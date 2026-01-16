@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mattsolo1/grove-anthropic/pkg/models"
+	"github.com/grovetools/grove-anthropic/pkg/models"
 )
 
 // QueryLog represents a single API query log entry

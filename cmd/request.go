@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mattsolo1/grove-anthropic/pkg/anthropic"
-	"github.com/mattsolo1/grove-anthropic/pkg/pretty"
-	grovelogging "github.com/mattsolo1/grove-core/logging"
+	"github.com/grovetools/grove-anthropic/pkg/anthropic"
+	"github.com/grovetools/grove-anthropic/pkg/pretty"
+	grovelogging "github.com/grovetools/core/logging"
 	"github.com/spf13/cobra"
 )
 

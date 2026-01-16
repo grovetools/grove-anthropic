@@ -1,13 +1,13 @@
-module github.com/mattsolo1/grove-anthropic
+module github.com/grovetools/grove-anthropic
 
 go 1.24.4
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/mattsolo1/grove-context v0.5.0
-	github.com/mattsolo1/grove-core v0.5.0
-	github.com/mattsolo1/grove-tend v0.4.0
+	github.com/grovetools/cx v0.0.1
+	github.com/grovetools/core v0.0.1
+	github.com/grovetools/tend v0.0.1
 	github.com/spf13/cobra v1.9.1
 )
 

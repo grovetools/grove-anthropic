@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/mattsolo1/grove-anthropic/cmd"
+	"github.com/grovetools/grove-anthropic/cmd"
 )
 
 func main() {

@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	grovecontext "github.com/mattsolo1/grove-context/pkg/context"
-	"github.com/mattsolo1/grove-anthropic/pkg/logging"
-	"github.com/mattsolo1/grove-anthropic/pkg/pretty"
-	"github.com/mattsolo1/grove-core/tui/theme"
+	grovecontext "github.com/grovetools/cx/pkg/context"
+	"github.com/grovetools/grove-anthropic/pkg/logging"
+	"github.com/grovetools/grove-anthropic/pkg/pretty"
+	"github.com/grovetools/core/tui/theme"
 )
 
 // RequestOptions contains all the parameters for a request

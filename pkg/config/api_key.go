@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"strings"
 
-	core_config "github.com/mattsolo1/grove-core/config"
-	core_errors "github.com/mattsolo1/grove-core/errors"
+	core_config "github.com/grovetools/core/config"
+	core_errors "github.com/grovetools/core/errors"
 )
 
 // AnthropicConfig defines the structure for the 'anthropic' extension in grove.yml

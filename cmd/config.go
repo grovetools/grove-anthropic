@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mattsolo1/grove-anthropic/pkg/config"
+	"github.com/grovetools/grove-anthropic/pkg/config"
 	"github.com/spf13/cobra"
 )
 

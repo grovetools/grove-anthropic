@@ -9,11 +9,11 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/mattsolo1/grove-anthropic/pkg/config"
-	grovecontext "github.com/mattsolo1/grove-anthropic/pkg/context"
-	"github.com/mattsolo1/grove-anthropic/pkg/logging"
-	"github.com/mattsolo1/grove-anthropic/pkg/models"
-	corelogging "github.com/mattsolo1/grove-core/logging"
+	"github.com/grovetools/grove-anthropic/pkg/config"
+	grovecontext "github.com/grovetools/grove-anthropic/pkg/context"
+	"github.com/grovetools/grove-anthropic/pkg/logging"
+	"github.com/grovetools/grove-anthropic/pkg/models"
+	corelogging "github.com/grovetools/core/logging"
 )
 
 // DefaultModel is the default Claude model to use if none is specified.
