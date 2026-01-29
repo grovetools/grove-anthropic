@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/grovetools/core/pkg/paths"
 	"github.com/grovetools/grove-anthropic/pkg/models"
 )
 
@@ -56,11 +57,11 @@ func GetLogger() *QueryLogger {
 }
 
 func getLogPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	stateDir := paths.StateDir()
+	if stateDir == "" {
+		return "", fmt.Errorf("could not determine grove state directory")
 	}
-	groveDir := filepath.Join(homeDir, ".grove", "anthropic-logs")
+	groveDir := filepath.Join(stateDir, "logs", "anthropic")
 	if err := os.MkdirAll(groveDir, 0755); err != nil {
 		return "", err
 	}
