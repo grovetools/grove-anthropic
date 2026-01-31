@@ -1,4 +1,3 @@
-<!-- DOCGEN:OVERVIEW:START -->
 
 `grove-anthropic` is a command-line interface and Go library for interacting with the Anthropic API. It serves as the provider-specific implementation for Claude models within the Grove ecosystem, handling context assembly, token usage tracking, and structured logging.
 
@@ -35,11 +34,3 @@ All identified files are uploaded via the Anthropic Beta Files API rather than b
 *   **Flow**: Uses this tool to execute agentic workflows that require Anthropic's reasoning capabilities.
 *   **Context**: Relies on `grove cx` for file traversal and `.gitignore` parsing when regenerating context.
 
-<!-- DOCGEN:OVERVIEW:END -->
-
-<!-- DOCGEN:TOC:START -->
-
-See the [documentation](docs/) for detailed usage instructions:
-- [Overview](docs/01-overview.md)
-
-<!-- DOCGEN:TOC:END -->
