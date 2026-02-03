@@ -46,12 +46,12 @@ github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f/go.mod h1:vw97
 github.com/gdamore/encoding v0.0.0-20151215212835-b23993cbb635/go.mod h1:yrQYJKKDTrHmbYxI7CYi+/hbdiDT2m4Hj+t0ikCjsrQ=
 github.com/gdamore/tcell v1.0.1-0.20180608172421-b3cebc399d6f/go.mod h1:tqyG50u7+Ctv1w5VX67kLzKcj9YXR/JSBZQq/+mLl1A=
 github.com/gopherjs/gopherjs v0.0.0-20181017120253-0766667cb4d1/go.mod h1:wJfORRmW1u3UXTncJ5qlYoELFm8eSnnEO6hX4iZ3EWY=
-github.com/grovetools/core v0.0.1 h1:o3h/EQBCBA7kk3xGI9On6KaDm5KwhPvC1eVP/OBg/EE=
-github.com/grovetools/core v0.0.1/go.mod h1:be/Q4hF6XpD8PVHkk6jTjiPHUKbWzKxNzkPBCAc40oE=
-github.com/grovetools/cx v0.0.1 h1:guM/ywq6ipxfhU2YIyZL7UB327l6J7N6ub7A8lRXQ8s=
-github.com/grovetools/cx v0.0.1/go.mod h1:wC9ssHxHEXJYLwNwwFFd/+ya57ju8pbZJJ5ZIQlSrwA=
-github.com/grovetools/tend v0.0.1 h1:KVeX1L1OW4h8naZAdx9eapj1/p9/83Eo9EzTp5Tg62k=
-github.com/grovetools/tend v0.0.1/go.mod h1:02yOrDK/NTYtMvyBhuCjQAm8V5tNd1T+tkdYuVg0H68=
+github.com/grovetools/core v0.6.1 h1:UtvCCHweLlHae9n6YtvgQP9oziPO23pagEhGCGqtgmw=
+github.com/grovetools/core v0.6.1/go.mod h1:RDFAOmjoEbh9ygGpmZU1oAK9YeU1psek3GIFxIB30fA=
+github.com/grovetools/cx v0.6.0 h1:q7WF21WMuBcSZsZtCbEn5R9SwAzScx6B9q7r2+Kr9dE=
+github.com/grovetools/cx v0.6.0/go.mod h1:3JFu0OcgMMSe+P4RmspvkEobgS5hOwblIQZi7HmE/8c=
+github.com/grovetools/tend v0.6.0 h1:LGz8CK3pPQC5RLw7BIaQcqHU66UqAYte39Ojlxo2GCk=
+github.com/grovetools/tend v0.6.0/go.mod h1:o36W0Kgx7ZmLUuutLH9afqgnaWahjXlV4rIVet2Adoc=
 github.com/hinshun/vt10x v0.0.0-20180809195222-d55458df857c/go.mod h1:DqJ97dSdRW1W22yXSB90986pcOyQ7r45iio1KN2ez1A=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
@@ -87,6 +87,8 @@ github.com/muesli/cancelreader v0.2.2 h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELU
 github.com/muesli/cancelreader v0.2.2/go.mod h1:3XuTXfFS2VjM+HTLZY9Ak0l6eUKfijIfMUZ4EgX0QYo=
 github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc=
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
+github.com/pelletier/go-toml/v2 v2.2.4 h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4=
+github.com/pelletier/go-toml/v2 v2.2.4/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
