@@ -12,8 +12,8 @@ import (
 
 // AnthropicConfig defines the structure for the 'anthropic' extension in grove.yml
 type AnthropicConfig struct {
-	APIKey        string `yaml:"api_key"`
-	APIKeyCommand string `yaml:"api_key_command"`
+	APIKey        string `yaml:"api_key" jsonschema:"description=Direct API key for Anthropic Claude" jsonschema_extras:"x-layer=global,x-priority=200,x-sensitive=true,x-important=true,x-hint=Consider using api_key_command to fetch from a secrets manager"`
+	APIKeyCommand string `yaml:"api_key_command" jsonschema:"description=Shell command to retrieve API key (e.g. 1password or secrets manager)" jsonschema_extras:"x-layer=global,x-priority=60,x-important=true"`
 }
 
 // ResolveAPIKey resolves the Anthropic API key from multiple sources in order of precedence:
