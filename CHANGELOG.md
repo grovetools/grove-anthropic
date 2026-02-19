@@ -1,3 +1,18 @@
+## v0.6.1 (2026-02-19)
+
+Configuration handling has been enhanced with new JSON schema tags (e53bf14) that provide metadata for API key fields. These tags include sensitivity markers, priority ordering, and usage hints to improve tooling support and validation.
+
+### Features
+
+* Add jsonschema tags for API key config (e53bf14)
+
+### File Changes
+
+```
+ pkg/config/api_key.go | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+```
+
 ## v0.6.0 (2026-02-02)
 
 This release introduces XDG-compliant logging paths (6528197) and migrates the project configuration from YAML to TOML format (6e935b6). Additionally, the module dependencies have been updated to reflect the migration to the grovetools organization (fe84cdf), and the MIT License has been formally added (ebd671a).
