@@ -21,3 +21,7 @@ vendor/
 # OS
 .DS_Store
 Thumbs.db
+
+# Go workspace (local development)
+go.work
+go.work.sum
