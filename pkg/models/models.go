@@ -13,10 +13,10 @@ type Model struct {
 }
 
 // DefaultModel is the recommended default model to use.
-const DefaultModel = "claude-sonnet-4-5-20250929"
+const DefaultModel = "claude-sonnet-4-6-20260115"
 
 // DefaultAlias is the alias for the default model.
-const DefaultAlias = "claude-sonnet-4-5"
+const DefaultAlias = "claude-sonnet-4-6"
 
 // LongContextThreshold is the token count above which long context pricing applies.
 const LongContextThreshold int64 = 200_000
@@ -24,16 +24,26 @@ const LongContextThreshold int64 = 200_000
 // Models returns all available Anthropic Claude models.
 func Models() []Model {
 	return []Model{
-		// Claude 4.5 models (current)
+		// Claude 4.6 models (current)
 		{
-			ID:       "claude-sonnet-4-5-20250929",
-			Alias:    "claude-sonnet-4-5",
+			ID:       "claude-opus-4-6-20260115",
+			Alias:    "claude-opus-4-6",
 			Provider: "Anthropic",
-			Note:     "Sonnet 4.5 - best balance of speed and intelligence",
+			Note:     "Opus 4.6 - most intelligent for agents and coding",
+			Input:    5.00,
+			Output:   25.00,
+			Legacy:   false,
+		},
+		{
+			ID:       "claude-sonnet-4-6-20260115",
+			Alias:    "claude-sonnet-4-6",
+			Provider: "Anthropic",
+			Note:     "Sonnet 4.6 - best combination of speed and intelligence",
 			Input:    3.00,
 			Output:   15.00,
 			Legacy:   false,
 		},
+		// Claude 4.5 models
 		{
 			ID:       "claude-haiku-4-5-20251001",
 			Alias:    "claude-haiku-4-5",
@@ -44,13 +54,22 @@ func Models() []Model {
 			Legacy:   false,
 		},
 		{
+			ID:       "claude-sonnet-4-5-20250929",
+			Alias:    "claude-sonnet-4-5",
+			Provider: "Anthropic",
+			Note:     "Sonnet 4.5 - best balance of speed and intelligence",
+			Input:    3.00,
+			Output:   15.00,
+			Legacy:   true,
+		},
+		{
 			ID:       "claude-opus-4-5-20251101",
 			Alias:    "claude-opus-4-5",
 			Provider: "Anthropic",
 			Note:     "Opus 4.5 - maximum intelligence",
 			Input:    5.00,
 			Output:   25.00,
-			Legacy:   false,
+			Legacy:   true,
 		},
 		// Claude 4.x legacy
 		{

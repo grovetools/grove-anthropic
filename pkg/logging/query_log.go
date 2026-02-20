@@ -97,12 +97,21 @@ func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
 	var inputPrice, outputPrice float64 // per million tokens
 
 	// Check if this is a Sonnet model eligible for long context pricing
-	isSonnet := strings.Contains(model, "sonnet-4-5") || strings.Contains(model, "sonnet-4.5") ||
+	isSonnet := strings.Contains(model, "sonnet-4-6") || strings.Contains(model, "sonnet-4.6") ||
+		strings.Contains(model, "sonnet-4-5") || strings.Contains(model, "sonnet-4.5") ||
 		strings.Contains(model, "sonnet-4") || strings.Contains(model, "sonnet")
 	useLongContextPricing := isSonnet && inputTokens > models.LongContextThreshold
 
 	switch {
-	// Claude 4.5 models (current)
+	// Claude 4.6 models (current)
+	case strings.Contains(model, "opus-4-6") || strings.Contains(model, "opus-4.6"):
+		inputPrice = 5.00
+		outputPrice = 25.00
+	case strings.Contains(model, "sonnet-4-6") || strings.Contains(model, "sonnet-4.6"):
+		inputPrice = 3.00
+		outputPrice = 15.00
+
+	// Claude 4.5 models
 	case strings.Contains(model, "opus-4-5") || strings.Contains(model, "opus-4.5"):
 		inputPrice = 5.00
 		outputPrice = 25.00
