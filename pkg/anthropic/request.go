@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/grovetools/core/pkg/workspace"
 	grovecontext "github.com/grovetools/cx/pkg/context"
 	"github.com/grovetools/grove-anthropic/pkg/logging"
 	"github.com/grovetools/grove-anthropic/pkg/pretty"
@@ -67,12 +66,8 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 	r.logger.WorkingDirectoryCtx(ctx, workDir)
 
 	ctxMgr := grovecontext.NewManager(workDir)
-	node, _ := workspace.GetProjectByPath(workDir)
 
-	rulesPath := filepath.Join(workDir, ".grove", "rules")
-	if rp, err := ctxMgr.Locator().GetContextRulesFile(node); err == nil {
-		rulesPath = rp
-	}
+	rulesPath := ctxMgr.ResolveRulesPath()
 
 	hotContextFile := ctxMgr.ResolveContextPath()
 	coldContextFile := ctxMgr.ResolveCachedContextPath()
