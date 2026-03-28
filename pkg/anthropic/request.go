@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/grovetools/core/pkg/workspace"
 	grovecontext "github.com/grovetools/cx/pkg/context"
 	"github.com/grovetools/grove-anthropic/pkg/logging"
 	"github.com/grovetools/grove-anthropic/pkg/pretty"
@@ -65,9 +66,23 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 	workDir = absWorkDir
 	r.logger.WorkingDirectoryCtx(ctx, workDir)
 
+	ctxMgr := grovecontext.NewManager(workDir)
+	node, _ := workspace.GetProjectByPath(workDir)
+
 	rulesPath := filepath.Join(workDir, ".grove", "rules")
+	if rp, err := ctxMgr.Locator().GetContextRulesFile(node); err == nil {
+		rulesPath = rp
+	}
+
 	hotContextFile := filepath.Join(workDir, ".grove", "context")
+	if genDir, err := ctxMgr.Locator().GetContextGeneratedDir(node); err == nil {
+		hotContextFile = filepath.Join(genDir, "context")
+	}
+
 	coldContextFile := filepath.Join(workDir, ".grove", "cached-context")
+	if cacheDir, err := ctxMgr.Locator().GetContextCacheDir(node); err == nil {
+		coldContextFile = filepath.Join(cacheDir, "cached-context")
+	}
 
 	var allContextFiles []string
 	hasRules := false
@@ -79,7 +94,6 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 	if hasRules && options.RegenerateCtx {
 		r.logger.Blank()
 		r.logger.Progress(theme.IconSync + " Regenerating context from rules...")
-		ctxMgr := grovecontext.NewManager(workDir)
 		if err := ctxMgr.UpdateFromRules(); err != nil {
 			return "", fmt.Errorf("updating context from rules: %w", err)
 		}
