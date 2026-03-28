@@ -74,15 +74,8 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 		rulesPath = rp
 	}
 
-	hotContextFile := filepath.Join(workDir, ".grove", "context")
-	if genDir, err := ctxMgr.Locator().GetContextGeneratedDir(node); err == nil {
-		hotContextFile = filepath.Join(genDir, "context")
-	}
-
-	coldContextFile := filepath.Join(workDir, ".grove", "cached-context")
-	if cacheDir, err := ctxMgr.Locator().GetContextCacheDir(node); err == nil {
-		coldContextFile = filepath.Join(cacheDir, "cached-context")
-	}
+	hotContextFile := ctxMgr.ResolveContextPath()
+	coldContextFile := ctxMgr.ResolveCachedContextPath()
 
 	var allContextFiles []string
 	hasRules := false
