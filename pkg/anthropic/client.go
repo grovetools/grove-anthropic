@@ -9,11 +9,11 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	corelogging "github.com/grovetools/core/logging"
 	"github.com/grovetools/grove-anthropic/pkg/config"
 	grovecontext "github.com/grovetools/grove-anthropic/pkg/context"
 	"github.com/grovetools/grove-anthropic/pkg/logging"
 	"github.com/grovetools/grove-anthropic/pkg/models"
-	corelogging "github.com/grovetools/core/logging"
 )
 
 // DefaultModel is the default Claude model to use if none is specified.
@@ -90,7 +90,7 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 // generateContentInternal contains the core API call logic.
 // Uses streaming internally to support longer requests (>10 min) with high max_tokens.
 func (c *Client) generateContentInternal(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64) (string, *anthropic.BetaUsage, error) {
-	var contentBlocks []anthropic.BetaContentBlockParamUnion
+	contentBlocks := make([]anthropic.BetaContentBlockParamUnion, 0, 1+len(contextFiles))
 
 	// Add the text prompt
 	contentBlocks = append(contentBlocks, anthropic.NewBetaTextBlock(prompt))

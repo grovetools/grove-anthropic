@@ -256,7 +256,7 @@ func (l *Logger) Progress(message string) {
 // Blank prints a blank line
 func (l *Logger) Blank() {
 	// Keep fmt for blank lines - ulog would add unwanted structure
-	fmt.Fprintln(l.writer)
+	_, _ = fmt.Fprintln(l.writer)
 }
 
 // Section prints a section header

@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
+	grovelogging "github.com/grovetools/core/logging"
 	"github.com/grovetools/grove-anthropic/pkg/anthropic"
 	"github.com/grovetools/grove-anthropic/pkg/pretty"
-	grovelogging "github.com/grovetools/core/logging"
 	"github.com/spf13/cobra"
 )
 
@@ -58,7 +58,7 @@ func runRequest(cmd *cobra.Command, args []string) error {
 	if requestPrompt != "" {
 		promptText = requestPrompt
 	} else if requestPromptFile != "" {
-		content, err := os.ReadFile(requestPromptFile)
+		content, err := os.ReadFile(requestPromptFile) //nolint:gosec // CLI flag input, not arbitrary user data
 		if err != nil {
 			return fmt.Errorf("reading prompt file: %w", err)
 		}
@@ -84,7 +84,7 @@ func runRequest(cmd *cobra.Command, args []string) error {
 	}
 
 	if requestOutputFile != "" {
-		if err := os.WriteFile(requestOutputFile, []byte(response), 0644); err != nil {
+		if err := os.WriteFile(requestOutputFile, []byte(response), 0o600); err != nil {
 			return fmt.Errorf("writing output file: %w", err)
 		}
 		logger := pretty.New()

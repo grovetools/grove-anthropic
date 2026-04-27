@@ -43,13 +43,12 @@ func ResolveAPIKey() (string, error) {
 
 	// Parse the anthropic extension
 	var anthropicCfg AnthropicConfig
-	if err := cfg.UnmarshalExtension("anthropic", &anthropicCfg); err != nil {
-		// Extension doesn't exist or couldn't be parsed - that's okay, check for empty
-	}
+	// Extension might not exist or parse — fall through to empty-check
+	_ = cfg.UnmarshalExtension("anthropic", &anthropicCfg)
 
 	// Second priority: Command execution
 	if anthropicCfg.APIKeyCommand != "" {
-		cmd := exec.Command("sh", "-c", anthropicCfg.APIKeyCommand)
+		cmd := exec.Command("sh", "-c", anthropicCfg.APIKeyCommand) //nolint:gosec // command comes from user's grove.yml config
 		output, err := cmd.Output()
 		if err != nil {
 			return "", fmt.Errorf("failed to execute api_key_command '%s': %w", anthropicCfg.APIKeyCommand, err)

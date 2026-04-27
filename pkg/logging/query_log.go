@@ -62,7 +62,7 @@ func getLogPath() (string, error) {
 		return "", fmt.Errorf("could not determine grove state directory")
 	}
 	groveDir := filepath.Join(stateDir, "logs", "anthropic")
-	if err := os.MkdirAll(groveDir, 0755); err != nil {
+	if err := os.MkdirAll(groveDir, 0750); err != nil { //nolint:gosec // internal log directory
 		return "", err
 	}
 	today := time.Now().Format("2006-01-02")
@@ -76,11 +76,11 @@ func (ql *QueryLogger) Log(entry QueryLog) error {
 	}
 	ql.mu.Lock()
 	defer ql.mu.Unlock()
-	file, err := os.OpenFile(ql.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(ql.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600) //nolint:gosec // internal append-only log
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	encoder := json.NewEncoder(file)
 	if err := encoder.Encode(entry); err != nil {
 		return fmt.Errorf("failed to write log entry: %w", err)

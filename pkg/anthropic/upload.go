@@ -12,11 +12,11 @@ import (
 
 // uploadFile uploads a single file to the Anthropic API and returns its metadata.
 func uploadFile(ctx context.Context, client *anthropic.Client, filePath string) (*anthropic.FileMetadata, error) {
-	file, err := os.Open(filePath)
+	file, err := os.Open(filePath) //nolint:gosec // filePath is caller-provided context file, not user input
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file %s: %w", filePath, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	fileReader := anthropic.File(file, filepath.Base(filePath), detectMIMEType(filePath))
 
