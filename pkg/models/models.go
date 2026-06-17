@@ -24,7 +24,17 @@ const LongContextThreshold int64 = 200_000
 // Models returns all available Anthropic Claude models.
 func Models() []Model {
 	return []Model{
-		// Claude 4.6 models (current)
+		// Claude 4.8 models (current)
+		{
+			ID:       "claude-opus-4-8-20260612",
+			Alias:    "claude-opus-4-8",
+			Provider: "Anthropic",
+			Note:     "Opus 4.8 - top Anthropic coding and agentic model",
+			Input:    5.00,
+			Output:   25.00,
+			Legacy:   false,
+		},
+		// Claude 4.6 models
 		{
 			ID:       "claude-opus-4-6-20260115",
 			Alias:    "claude-opus-4-6",
