@@ -103,7 +103,11 @@ func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
 	useLongContextPricing := isSonnet && inputTokens > models.LongContextThreshold
 
 	switch {
-	// Claude 4.6 models (current)
+	// Claude 4.8 models (current)
+	case strings.Contains(model, "opus-4-8") || strings.Contains(model, "opus-4.8"):
+		inputPrice = 5.00
+		outputPrice = 25.00
+	// Claude 4.6 models
 	case strings.Contains(model, "opus-4-6") || strings.Contains(model, "opus-4.6"):
 		inputPrice = 5.00
 		outputPrice = 25.00
