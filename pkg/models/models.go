@@ -18,6 +18,11 @@ const DefaultModel = "claude-sonnet-4-6-20260115"
 // DefaultAlias is the alias for the default model.
 const DefaultAlias = "claude-sonnet-4-6"
 
+// DefaultAgentAlias is the default model alias for claude agent jobs
+// (interactive/headless/isolated). Distinct from DefaultAlias, which is
+// the oneshot/chat planning default.
+const DefaultAgentAlias = "claude-opus-4-8"
+
 // LongContextThreshold is the token count above which long context pricing applies.
 const LongContextThreshold int64 = 200_000
 
@@ -26,7 +31,7 @@ func Models() []Model {
 	return []Model{
 		// Claude 4.8 models (current)
 		{
-			ID:       "claude-opus-4-8-20260612",
+			ID:       "claude-opus-4-8",
 			Alias:    "claude-opus-4-8",
 			Provider: "Anthropic",
 			Note:     "Opus 4.8 - top Anthropic coding and agentic model",
