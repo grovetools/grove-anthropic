@@ -25,7 +25,9 @@ var (
 )
 
 func newSandboxPage(d *Data) *sandboxPage {
-	p := &sandboxPage{data: d, tv: newTreeView(false)}
+	// Selectable so directories, sandbox booleans, and domain lists can be
+	// edited; the computed boundary rows carry no payload and are skipped.
+	p := &sandboxPage{data: d, tv: newTreeView(true)}
 	p.tv.setRoots(p.build())
 	return p
 }
@@ -33,7 +35,7 @@ func newSandboxPage(d *Data) *sandboxPage {
 func (p *sandboxPage) Name() string  { return "Sandbox" }
 func (p *sandboxPage) TabID() string { return "sandbox" }
 func (p *sandboxPage) Title() string {
-	return theme.DefaultTheme.Muted.Render("  Directories & sandbox boundary (read / write / network)")
+	return theme.DefaultTheme.Muted.Render("  Directories & sandbox boundary — enter edits · x removes")
 }
 func (p *sandboxPage) Init() tea.Cmd { return nil }
 
@@ -54,9 +56,13 @@ func (p *sandboxPage) build() []*node {
 	} else {
 		add("  " + th.Muted.Render("additionalDirectories:"))
 		for _, d := range m.AdditionalDirectories {
-			add(fmt.Sprintf("    %s %s", scopeTag(d.Scope), d.Value))
+			rows = append(rows, leaf(
+				fmt.Sprintf("    %s %s", scopeTag(d.Scope), d.Value),
+				dirPayload{value: d.Value, scope: d.Scope, remove: true},
+			))
 		}
 	}
+	rows = append(rows, leaf("  "+th.Highlight.Render("[+ add directory]"), dirPayload{}))
 	blank()
 
 	// --- Filesystem boundary ---
@@ -70,8 +76,8 @@ func (p *sandboxPage) build() []*node {
 
 	// --- Network ---
 	add(section("Network"))
-	p.domainList(&rows, "allowed", p.data.Net.AllowedDomains, th.Success)
-	p.domainList(&rows, "denied", p.data.Net.DeniedDomains, th.Error)
+	p.editableDomains(&rows, "allowed", "allowedDomains", m.NetAllowedDomains, th.Success, p.data.Net.AllowManagedDomainsOnly)
+	p.editableDomains(&rows, "denied", "deniedDomains", m.NetDeniedDomains, th.Error, false)
 	if p.data.Net.AllowManagedDomainsOnly {
 		add("  " + badge("allowManagedDomainsOnly", th.Error) + th.Muted.Render(" — non-allowed domains blocked, not prompted"))
 	}
@@ -79,9 +85,9 @@ func (p *sandboxPage) build() []*node {
 
 	// --- Sandbox mode/flags ---
 	add(section("Sandbox"))
-	add("  " + kvLine("enabled", boolProv(m.SandboxEnabled)))
-	add("  " + kvLine("failIfUnavailable", boolProv(m.SandboxFailIfUnavailable)))
-	add("  " + kvLine("allowUnsandboxedCommands", boolProv(m.SandboxAllowUnsandboxedCommands)))
+	rows = append(rows, p.sandboxBoolRow("enabled", m.SandboxEnabled))
+	rows = append(rows, p.sandboxBoolRow("failIfUnavailable", m.SandboxFailIfUnavailable))
+	rows = append(rows, p.sandboxBoolRow("allowUnsandboxedCommands", m.SandboxAllowUnsandboxedCommands))
 	if len(m.SandboxExcludedCommands) == 0 {
 		add("  " + kvLine("excludedCommands", th.Muted.Render("(none)")))
 	} else {
@@ -121,17 +127,39 @@ func (p *sandboxPage) boundaryRow(sign string, e ccsettings.BoundaryEntry) strin
 	return fmt.Sprintf("    %s %s%s  %s", sign, e.Path, scopeBit, src)
 }
 
-func (p *sandboxPage) domainList(rows *[]*node, label string, entries []ccsettings.BoundaryEntry, style interface{ Render(...string) string }) {
+// editableDomains renders a network domain list (allowedDomains/deniedDomains)
+// with per-entry remove payloads and an add affordance. listKey is the JSON key
+// ("allowedDomains"/"deniedDomains"); managedOnly suppresses the add affordance
+// when the managed-domains-only lockdown makes user additions ineffective.
+func (p *sandboxPage) editableDomains(rows *[]*node, label, listKey string, entries []ccsettings.ProvenancedString, style interface{ Render(...string) string }, managedOnly bool) {
 	th := theme.DefaultTheme
 	if len(entries) == 0 {
 		*rows = append(*rows, leaf("  "+kvLine(label+" domains", th.Muted.Render("(none)")), nil))
-		return
+	} else {
+		*rows = append(*rows, leaf("  "+th.Muted.Render(label+" domains:"), nil))
+		for _, e := range entries {
+			*rows = append(*rows, leaf(
+				fmt.Sprintf("    %s %s", style.Render(e.Value), scopeTag(e.Scope)),
+				domainPayload{value: e.Value, list: listKey, scope: e.Scope, remove: true},
+			))
+		}
 	}
-	*rows = append(*rows, leaf("  "+th.Muted.Render(label+" domains:"), nil))
-	for _, e := range entries {
-		*rows = append(*rows, leaf(fmt.Sprintf("    %s %s  %s",
-			style.Render(e.Path), scopeTag(e.Scope), th.Muted.Render(e.Source)), nil))
+	if !managedOnly {
+		*rows = append(*rows, leaf(
+			"  "+th.Highlight.Render(fmt.Sprintf("[+ add %s domain]", label)),
+			domainPayload{list: listKey},
+		))
 	}
+}
+
+// sandboxBoolRow renders an editable sandbox boolean with a toggle payload.
+func (p *sandboxPage) sandboxBoolRow(key string, b ccsettings.ProvenancedBool) *node {
+	return leaf("  "+kvLine(key, boolProv(b)), sandboxBoolPayload{
+		key:     key,
+		current: b.Value,
+		set:     b.Set,
+		scope:   b.Scope,
+	})
 }
 
 // boolProv renders a ProvenancedBool with its deciding scope, or "(unset)".
@@ -151,13 +179,142 @@ func (p *sandboxPage) Update(msg tea.Msg) (pager.Page, tea.Cmd) {
 	if !p.tv.active {
 		return p, nil
 	}
-	if km, ok := msg.(tea.KeyMsg); ok {
-		p.tv.handleKey(km)
+	km, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return p, nil
 	}
+	switch km.String() {
+	case "enter", " ":
+		if intent, ok := p.intentForSelected(false); ok {
+			return p, func() tea.Msg { return editRequestMsg{intent: intent} }
+		}
+	case "x", "d", "delete", "backspace":
+		if intent, ok := p.intentForSelected(true); ok {
+			return p, func() tea.Msg { return editRequestMsg{intent: intent} }
+		}
+	}
+	p.tv.handleKey(km)
 	return p, nil
 }
 
-func (p *sandboxPage) View() string     { return p.tv.view() }
-func (p *sandboxPage) Focus() tea.Cmd   { p.tv.active = true; return nil }
-func (p *sandboxPage) Blur()            { p.tv.active = false }
-func (p *sandboxPage) SetSize(w, h int) { p.tv.setSize(w, h) }
+// intentForSelected builds an edit intent for the sandbox row under the cursor.
+// remove=true requests deletion of an existing directory/domain entry. Returns
+// ok=false on non-editable rows (computed boundaries, headers).
+func (p *sandboxPage) intentForSelected(remove bool) (editIntent, bool) {
+	n := p.tv.selected()
+	if n == nil {
+		return editIntent{}, false
+	}
+	switch pl := n.data.(type) {
+	case dirPayload:
+		return p.dirIntent(pl, remove)
+	case domainPayload:
+		return p.domainIntent(pl, remove)
+	case sandboxBoolPayload:
+		if remove {
+			return editIntent{}, false
+		}
+		return p.sandboxBoolIntent(pl)
+	default:
+		return editIntent{}, false
+	}
+}
+
+func (p *sandboxPage) dirIntent(pl dirPayload, remove bool) (editIntent, bool) {
+	if pl.remove && remove {
+		val := pl.value
+		if pl.scope == ccsettings.ScopeManaged {
+			return readOnlyIntent("Directory (read-only)", "Managed-scope directories are policy-owned."), true
+		}
+		return editIntent{
+			kind:           editRemoveDirectory,
+			title:          fmt.Sprintf("Remove directory %q", val),
+			suggestedScope: defaultTargetScope(pl.scope),
+			build: func(scope ccsettings.Scope, _ string) ccsettings.Action {
+				return ccsettings.Action{Kind: ccsettings.ActionRemoveDirectory, Value: val}
+			},
+		}, true
+	}
+	if pl.remove {
+		// enter on an existing entry does nothing actionable; ignore.
+		return editIntent{}, false
+	}
+	// The add affordance.
+	return editIntent{
+		kind:           editAddDirectory,
+		title:          "Add additional directory",
+		needsInput:     true,
+		seed:           "",
+		suggestedScope: writableScopes[0],
+		build: func(scope ccsettings.Scope, value string) ccsettings.Action {
+			return ccsettings.Action{Kind: ccsettings.ActionAddDirectory, Value: value}
+		},
+	}, true
+}
+
+func (p *sandboxPage) domainIntent(pl domainPayload, remove bool) (editIntent, bool) {
+	if p.data.Net.AllowManagedDomainsOnly && pl.list == "allowedDomains" {
+		return readOnlyIntent("Allowed domains (read-only)",
+			"allowManagedDomainsOnly is set — only managed allowed domains apply."), true
+	}
+	if pl.remove && remove {
+		val := pl.value
+		list := pl.list
+		if pl.scope == ccsettings.ScopeManaged {
+			return readOnlyIntent("Domain (read-only)", "Managed-scope domains are policy-owned."), true
+		}
+		return editIntent{
+			kind:           editRemoveDomain,
+			title:          fmt.Sprintf("Remove %q from %s", val, list),
+			suggestedScope: defaultTargetScope(pl.scope),
+			build: func(scope ccsettings.Scope, _ string) ccsettings.Action {
+				return ccsettings.Action{Kind: ccsettings.ActionRemoveDomain, Value: val, DomainList: list}
+			},
+		}, true
+	}
+	if pl.remove {
+		return editIntent{}, false
+	}
+	list := pl.list
+	return editIntent{
+		kind:           editAddDomain,
+		title:          fmt.Sprintf("Add domain to %s", list),
+		needsInput:     true,
+		suggestedScope: writableScopes[0],
+		build: func(scope ccsettings.Scope, value string) ccsettings.Action {
+			return ccsettings.Action{Kind: ccsettings.ActionAddDomain, Value: value, DomainList: list}
+		},
+	}, true
+}
+
+func (p *sandboxPage) sandboxBoolIntent(pl sandboxBoolPayload) (editIntent, bool) {
+	if pl.set && pl.scope == ccsettings.ScopeManaged {
+		return readOnlyIntent("Sandbox flag (read-only)", "This flag is set by the Managed scope."), true
+	}
+	key := pl.key
+	next := !pl.current // unset is treated as false → toggles to true
+	return editIntent{
+		kind:           editToggleSandboxBool,
+		title:          fmt.Sprintf("Set sandbox.%s = %t", key, next),
+		suggestedScope: defaultTargetScope(pl.scope),
+		build: func(scope ccsettings.Scope, _ string) ccsettings.Action {
+			return ccsettings.Action{Kind: ccsettings.ActionSetSandboxBool, SandboxKey: key, BoolVal: next}
+		},
+	}, true
+}
+
+// readOnlyIntent builds a non-writable intent the overlay renders as a notice.
+func readOnlyIntent(title, reason string) editIntent {
+	return editIntent{title: title, readOnly: true, reason: reason}
+}
+
+func (p *sandboxPage) View() string {
+	if len(p.tv.flat) == 0 {
+		return emptyBox(p.tv.width, p.tv.height, "No sandbox configuration.")
+	}
+	return p.tv.view()
+}
+func (p *sandboxPage) Focus() tea.Cmd        { p.tv.active = true; return nil }
+func (p *sandboxPage) Blur()                 { p.tv.active = false }
+func (p *sandboxPage) SetSize(w, h int)      { p.tv.setSize(w, h) }
+func (p *sandboxPage) IsZChordPending() bool { return p.tv.zChordPending() }

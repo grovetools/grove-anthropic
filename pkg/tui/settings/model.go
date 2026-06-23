@@ -12,15 +12,21 @@ import (
 	"github.com/grovetools/core/tui/theme"
 )
 
-// Model is the read-only Claude Code settings browser. It hosts the six
-// analytical pages in a core pager.Model and overlays a help view. It is a
-// standard embeddable model: quit emits embed.CloseRequestMsg and jump-to-source
-// emits embed.EditRequestMsg, both handled by embed.RunStandalone.
+// Model is the Claude Code settings browser. It hosts the six analytical pages
+// in a core pager.Model, overlays a help view, and — for the editable pages —
+// an edit overlay that drives scope-targeted, dry-run-confirmed writes through
+// the comment-preserving ccsettings writer. It is a standard embeddable model:
+// quit emits embed.CloseRequestMsg and jump-to-source emits embed.EditRequestMsg,
+// both handled by embed.RunStandalone.
 type Model struct {
 	pager pager.Model
 	keys  keymap.Base
 	help  help.Model
 	data  *Data
+
+	// edit is the active edit overlay, or nil when no edit is in progress. While
+	// non-nil it swallows all input until it closes (confirm or cancel).
+	edit *editOverlay
 
 	width  int
 	height int
@@ -62,6 +68,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.SetSize(msg.Width, msg.Height)
+		if m.edit != nil {
+			m.edit.setSize(msg.Width, msg.Height)
+		}
 		m.pager, cmd = m.pager.Update(msg)
 		return m, cmd
 
@@ -72,7 +81,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case embed.SetWorkspaceMsg:
 		return m, nil
 
+	case editRequestMsg:
+		// A page asked to edit the selected row: open the overlay over it.
+		m.edit = newEditOverlay(m.data, msg.intent, m.width, m.height)
+		return m, nil
+
+	case editCommittedMsg:
+		// The write succeeded: close the overlay and reload from disk so every
+		// page reflects the new settings.
+		m.edit = nil
+		return m.reload(), nil
+
 	case tea.KeyMsg:
+		// The edit overlay, when open, swallows all keys until it closes.
+		if m.edit != nil {
+			done, c := m.edit.Update(msg)
+			if done {
+				m.edit = nil
+			}
+			return m, c
+		}
+
 		// Help overlay swallows keys while shown.
 		if m.help.ShowAll {
 			if key.Matches(msg, m.keys.Help) || key.Matches(msg, m.keys.Back) || key.Matches(msg, m.keys.Quit) {
@@ -102,6 +131,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// reload re-discovers and re-merges settings from disk and rebuilds the pages,
+// preserving the active tab and current window size. Called after a successful
+// edit write so the browser reflects the change immediately. A reload failure
+// leaves the existing Data in place rather than crashing the TUI.
+func (m Model) reload() Model {
+	data, err := Load()
+	if err != nil {
+		return m
+	}
+	active := m.pager.ActiveIndex()
+	rebuilt := New(data)
+	rebuilt.width = m.width
+	rebuilt.height = m.height
+	if m.width > 0 && m.height > 0 {
+		rebuilt.pager, _ = rebuilt.pager.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	}
+	rebuilt.pager.SetActive(active)
+	return rebuilt
+}
+
 // activeTextEntry reports whether the active page is currently capturing text
 // input (the Probe field), so the model defers its global keys to the page.
 func (m Model) activeTextEntry() bool {
@@ -115,6 +164,9 @@ func (m Model) View() string {
 	if m.help.ShowAll {
 		return m.help.View()
 	}
+	if m.edit != nil {
+		return m.edit.View()
+	}
 	m.pager.SetFooter(m.footer())
 	return m.pager.View()
 }
@@ -122,11 +174,15 @@ func (m Model) View() string {
 func (m Model) footer() string {
 	th := theme.DefaultTheme
 	hints := []string{"j/k move", "[/] tabs", "1-6 jump"}
-	if _, ok := m.pager.Active().(*scopesPage); ok {
+	switch m.pager.Active().(type) {
+	case *scopesPage:
 		hints = append(hints, "enter open file")
-	}
-	if _, ok := m.pager.Active().(*probePage); ok {
+	case *probePage:
 		hints = append(hints, "i edit · esc done")
+	case *permissionsPage:
+		hints = append(hints, "enter cycle rule", "x remove")
+	case *sandboxPage:
+		hints = append(hints, "enter edit", "x remove")
 	}
 	hints = append(hints, "? help", "q quit")
 	return th.Muted.Render(strings.Join(hints, "  "+theme.IconBullet+"  "))
