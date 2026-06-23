@@ -3,14 +3,19 @@
 // provenance-tracked view of every settings.json scope file over a core
 // pager.Model with one page per analytical lens: discovered scope files, the
 // permission rule tree, the directory/sandbox boundary, a rule×scope matrix, a
-// live evaluation probe, and an effective-summary view.
+// live evaluation probe, an effective-summary view, and a job-centric command
+// browser.
 //
 // Most pages are read-only — the browser observes and explains the resolved
 // configuration. The Permissions and Sandbox pages additionally support
 // scope-targeted edits (toggle a rule's tier, add/remove a directory or domain,
-// flip a sandbox flag), driven through a dry-run-confirmed overlay and written
-// by the comment-preserving ccsettings writer. The Managed scope is never
-// writable, and managed lockdowns render their areas read-only.
+// flip a sandbox flag), and the Commands page closes the generalize→allow loop:
+// it reads a job's recorded commands.jsonl, shows the live verdict for each
+// command, and lets the user synthesize an allow rule of a chosen breadth from a
+// command an agent actually ran. All edits flow through a dry-run-confirmed
+// overlay and are written by the comment-preserving ccsettings writer. The
+// Managed scope is never writable, and managed lockdowns render their areas
+// read-only.
 package settings
 
 import (

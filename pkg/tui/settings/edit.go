@@ -20,6 +20,9 @@ const (
 	editToggleRule editKind = iota
 	// editRemoveRule deletes a rule from its tier.
 	editRemoveRule
+	// editAddRule writes a new rule into a tier (used by the Commands page's
+	// generalize→allow loop to add a synthesized rule to permissions.allow).
+	editAddRule
 	// editAddDirectory / editRemoveDirectory edit additionalDirectories.
 	editAddDirectory
 	editRemoveDirectory

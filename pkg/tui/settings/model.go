@@ -43,6 +43,7 @@ func New(data *Data) Model {
 		newMatrixPage(data),
 		newProbePage(data),
 		newEffectivePage(data),
+		newCommandsPage(data),
 	}
 
 	pgr := pager.NewWith(pages, pager.KeyMapFromBase(keys), pager.Config{
@@ -173,7 +174,7 @@ func (m Model) View() string {
 
 func (m Model) footer() string {
 	th := theme.DefaultTheme
-	hints := []string{"j/k move", "[/] tabs", "1-6 jump"}
+	hints := []string{"j/k move", "[/] tabs", "1-7 jump"}
 	switch m.pager.Active().(type) {
 	case *scopesPage:
 		hints = append(hints, "enter open file")
@@ -183,6 +184,8 @@ func (m Model) footer() string {
 		hints = append(hints, "enter cycle rule", "x remove")
 	case *sandboxPage:
 		hints = append(hints, "enter edit", "x remove")
+	case *commandsPage:
+		hints = append(hints, "enter open/generalize", "esc back", "r refresh")
 	}
 	hints = append(hints, "? help", "q quit")
 	return th.Muted.Render(strings.Join(hints, "  "+theme.IconBullet+"  "))

@@ -14,15 +14,21 @@ import (
 func newSettingsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "settings",
-		Short: "Browse the resolved Claude Code settings (read-only)",
-		Long: `Open a read-only TUI that observes and explains what the current
-environment permits Claude Code agents to do.
+		Short: "Browse and tune the resolved Claude Code settings",
+		Long: `Open a TUI that observes and explains what the current environment
+permits Claude Code agents to do, and lets you tune the permission rules.
 
 It resolves every settings.json scope file (Managed > CLI > Local > Project >
-User) into a merged, provenance-tracked view and renders it across six pages:
+User) into a merged, provenance-tracked view and renders it across seven pages:
 discovered scope files, the permission rule tree (allow/ask/deny with deny-wins
 and managed-lock badges), the directory/sandbox boundary, a rule x scope matrix,
-a live evaluation probe, and an effective-summary view.
+a live evaluation probe, an effective-summary view, and a job-centric command
+browser that turns a command an agent actually ran into a synthesized allow rule
+(the generalize-then-allow loop).
+
+The Permissions, Sandbox, and Commands pages drive scope-targeted, dry-run
+confirmed writes through the comment-preserving writer; the Managed scope is
+never writable.
 
 With --json, the merged settings and provenance are printed to stdout instead
 of opening the TUI (no terminal required), mirroring 'grove config --json'.`,
