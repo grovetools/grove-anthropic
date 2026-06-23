@@ -44,6 +44,7 @@ type tier struct {
 	name   string
 	rules  []ccsettings.ProvenancedRule
 	result ccsettings.DecisionResult
+	rt     ccsettings.RuleTier
 }
 
 func (p *permissionsPage) build() []*node {
@@ -51,9 +52,9 @@ func (p *permissionsPage) build() []*node {
 	m := p.data.Merged
 
 	tiers := []tier{
-		{"Deny", m.Deny, ccsettings.ResultDeny},
-		{"Ask", m.Ask, ccsettings.ResultAsk},
-		{"Allow", m.Allow, ccsettings.ResultAllow},
+		{"Deny", m.Deny, ccsettings.ResultDeny, ccsettings.TierDeny},
+		{"Ask", m.Ask, ccsettings.ResultAsk, ccsettings.TierAsk},
+		{"Allow", m.Allow, ccsettings.ResultAllow, ccsettings.TierAllow},
 	}
 
 	var roots []*node
@@ -92,7 +93,11 @@ func (p *permissionsPage) toolGroups(t tier) []*node {
 		rules := byTool[tool]
 		children := make([]*node, 0, len(rules))
 		for _, r := range rules {
-			children = append(children, leaf(p.ruleLabel(t, r), nil))
+			children = append(children, leaf(p.ruleLabel(t, r), rulePayload{
+				rule:  r.Rule,
+				tier:  t.rt,
+				scope: r.Scope,
+			}))
 		}
 		groups = append(groups, branch(
 			fmt.Sprintf("%s %s", th.Normal.Render(tool), th.Muted.Render(fmt.Sprintf("(%d)", len(rules)))),
@@ -132,10 +137,86 @@ func (p *permissionsPage) Update(msg tea.Msg) (pager.Page, tea.Cmd) {
 	if !p.tv.active {
 		return p, nil
 	}
-	if km, ok := msg.(tea.KeyMsg); ok {
-		p.tv.handleKey(km)
+	km, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return p, nil
 	}
+	// Edit chords act on the selected rule leaf before the tree consumes the key.
+	switch km.String() {
+	case "enter", " ":
+		if intent, ok := p.intentForSelected(false); ok {
+			return p, func() tea.Msg { return editRequestMsg{intent: intent} }
+		}
+	case "x", "d", "delete", "backspace":
+		if intent, ok := p.intentForSelected(true); ok {
+			return p, func() tea.Msg { return editRequestMsg{intent: intent} }
+		}
+	}
+	p.tv.handleKey(km)
 	return p, nil
+}
+
+// intentForSelected builds an edit intent for the rule under the cursor. remove
+// selects the delete intent; otherwise the allow→ask→deny toggle. Returns
+// ok=false when the cursor is not on a rule leaf.
+func (p *permissionsPage) intentForSelected(remove bool) (editIntent, bool) {
+	n := p.tv.selected()
+	if n == nil {
+		return editIntent{}, false
+	}
+	rp, ok := n.data.(rulePayload)
+	if !ok {
+		return editIntent{}, false
+	}
+
+	// Guardrail: a managed-scope rule, or any rule while the managed
+	// permission-rules-only lockdown is in force, is read-only.
+	if rp.scope == ccsettings.ScopeManaged {
+		return editIntent{
+			kind:     editToggleRule,
+			title:    "Permission rule (read-only)",
+			readOnly: true,
+			reason:   "Managed-scope rules are policy-owned and cannot be edited here.",
+		}, true
+	}
+	if p.data.Merged.AllowManagedPermissionRulesOnly {
+		return editIntent{
+			kind:     editToggleRule,
+			title:    "Permission rule (read-only)",
+			readOnly: true,
+			reason:   "allowManagedPermissionRulesOnly is set — only managed permission rules apply.",
+		}, true
+	}
+
+	if remove {
+		fromTier := rp.tier
+		ruleStr := rp.rule
+		return editIntent{
+			kind:           editRemoveRule,
+			title:          fmt.Sprintf("Remove rule %q", ruleStr),
+			suggestedScope: defaultTargetScope(rp.scope),
+			build: func(scope ccsettings.Scope, _ string) ccsettings.Action {
+				return ccsettings.Action{Kind: ccsettings.ActionRemoveRule, Rule: ruleStr, FromTier: fromTier}
+			},
+		}, true
+	}
+
+	fromTier := rp.tier
+	toTier := ccsettings.NextTier(fromTier)
+	ruleStr := rp.rule
+	return editIntent{
+		kind:           editToggleRule,
+		title:          fmt.Sprintf("Move rule %q: %s → %s", ruleStr, fromTier, toTier),
+		suggestedScope: defaultTargetScope(rp.scope),
+		build: func(scope ccsettings.Scope, _ string) ccsettings.Action {
+			return ccsettings.Action{
+				Kind:     ccsettings.ActionMoveRule,
+				Rule:     ruleStr,
+				FromTier: fromTier,
+				ToTier:   toTier,
+			}
+		},
+	}, true
 }
 
 func (p *permissionsPage) View() string {

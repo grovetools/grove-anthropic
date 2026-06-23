@@ -1,12 +1,16 @@
-// Package settings implements the read-only Claude Code settings browser TUI
+// Package settings implements the Claude Code settings browser TUI
 // (`grove-anthropic settings`). It renders the ccsettings package's merged,
 // provenance-tracked view of every settings.json scope file over a core
 // pager.Model with one page per analytical lens: discovered scope files, the
 // permission rule tree, the directory/sandbox boundary, a rule×scope matrix, a
 // live evaluation probe, and an effective-summary view.
 //
-// Every page is read-only — the browser observes and explains the resolved
-// configuration; it never writes a settings file. (Editing is a later phase.)
+// Most pages are read-only — the browser observes and explains the resolved
+// configuration. The Permissions and Sandbox pages additionally support
+// scope-targeted edits (toggle a rule's tier, add/remove a directory or domain,
+// flip a sandbox flag), driven through a dry-run-confirmed overlay and written
+// by the comment-preserving ccsettings writer. The Managed scope is never
+// writable, and managed lockdowns render their areas read-only.
 package settings
 
 import (
