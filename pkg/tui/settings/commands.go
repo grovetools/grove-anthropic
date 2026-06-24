@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/grovetools/core/pkg/paths"
 	"github.com/grovetools/grove-anthropic/pkg/ccsettings"
 )
 
@@ -286,6 +287,79 @@ type jobArtifacts struct {
 	JobName      string // the .artifacts/<jobName> directory name
 	CommandsPath string // absolute path to its commands.jsonl
 	PlanDir      string // the plan directory holding .artifacts
+}
+
+// discoverAllJobArtifacts is the discovery used by the Commands page. It merges
+// two sources: the cwd-relative walk (for ad-hoc runs from inside a plan dir)
+// and the flow session registry (for flow-launched agents, whose .artifacts live
+// in the notebook plan dir — a different tree from wherever the TUI is running).
+// Results are deduped by commands.jsonl path and sorted most-recently-modified.
+func discoverAllJobArtifacts(start string) []jobArtifacts {
+	seen := map[string]struct{}{}
+	var jobs []jobArtifacts
+	for _, src := range [][]jobArtifacts{discoverJobArtifacts(start), discoverFlowJobArtifacts()} {
+		for _, j := range src {
+			if _, dup := seen[j.CommandsPath]; dup {
+				continue
+			}
+			seen[j.CommandsPath] = struct{}{}
+			jobs = append(jobs, j)
+		}
+	}
+	sort.SliceStable(jobs, func(i, j int) bool {
+		return jobModTime(jobs[i].CommandsPath) > jobModTime(jobs[j].CommandsPath)
+	})
+	return jobs
+}
+
+// discoverFlowJobArtifacts finds commands.jsonl files by following the flow hook
+// session registry. Each <state>/hooks/sessions/<id>/metadata.json records the
+// job_file_path of a flow-launched agent; its directory is the plan dir holding
+// .artifacts. This is the same binding the recorder uses to decide where to
+// write, so it locates exactly the jobs that have run, regardless of cwd.
+func discoverFlowJobArtifacts() []jobArtifacts {
+	sessionsDir := filepath.Join(paths.StateDir(), "hooks", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return nil
+	}
+	planDirs := map[string]struct{}{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(sessionsDir, e.Name(), "metadata.json"))
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			JobFilePath string `json:"job_file_path"`
+		}
+		if json.Unmarshal(data, &meta) != nil || meta.JobFilePath == "" {
+			continue
+		}
+		planDirs[filepath.Dir(meta.JobFilePath)] = struct{}{}
+	}
+
+	var jobs []jobArtifacts
+	for planDir := range planDirs {
+		artifactsDir := filepath.Join(planDir, ".artifacts")
+		ents, err := os.ReadDir(artifactsDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if !e.IsDir() {
+				continue
+			}
+			cmdPath := filepath.Join(artifactsDir, e.Name(), "commands.jsonl")
+			if _, err := os.Stat(cmdPath); err != nil {
+				continue
+			}
+			jobs = append(jobs, jobArtifacts{JobName: e.Name(), CommandsPath: cmdPath, PlanDir: planDir})
+		}
+	}
+	return jobs
 }
 
 // discoverJobArtifacts finds every .artifacts/<job>/commands.jsonl reachable
