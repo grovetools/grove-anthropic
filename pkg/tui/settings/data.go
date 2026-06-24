@@ -41,10 +41,26 @@ type Data struct {
 // merges them under Claude's precedence, and builds the evaluation engine plus
 // the filesystem/network boundaries. Discovery is tolerant: missing or
 // malformed files are reported on the Scopes page rather than failing the load.
+// Load resolves the settings as seen from the process working directory. It is
+// the entry point for the standalone CLI.
 func Load() (*Data, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
+	}
+	return LoadFrom(cwd)
+}
+
+// LoadFrom resolves and merges the Claude Code settings as seen from cwd,
+// anchoring the Project and Local scopes and the filesystem boundary at cwd's
+// project root. Embedders (e.g. the treemux panel) pass the active workspace
+// directory so the panel reflects that workspace rather than the host process's
+// cwd. An empty cwd falls back to the process working directory.
+func LoadFrom(cwd string) (*Data, error) {
+	if cwd == "" {
+		if wd, err := os.Getwd(); err == nil {
+			cwd = wd
+		}
 	}
 	home, _ := os.UserHomeDir()
 	projectRoot := findProjectRoot(cwd, home)
