@@ -49,6 +49,14 @@ type Settings struct {
 	StatusLine          json.RawMessage `json:"statusLine,omitempty"`
 	Attribution         json.RawMessage `json:"attribution,omitempty"`
 
+	// SkipDangerousModePermissionPrompt records whether the user has accepted
+	// the bypass-permissions-mode dialog. It is a top-level key (not nested
+	// under "permissions") but it is permission-adjacent — it gates the
+	// dangerous bypass mode — so the model types it explicitly to render it in
+	// the Permissions/Effective views with provenance rather than as an opaque
+	// passthrough key.
+	SkipDangerousModePermissionPrompt *bool `json:"skipDangerousModePermissionPrompt,omitempty"`
+
 	// Unknown holds keys not recognized by the typed model above, preserved
 	// verbatim for forward compatibility and round-trip on write.
 	Unknown map[string]json.RawMessage `json:"-"`

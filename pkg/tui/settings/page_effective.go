@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/grovetools/core/tui/components/pager"
@@ -54,6 +55,15 @@ func (p *effectivePage) build() []*node {
 	if m.DisableAutoMode.Value != "" {
 		add("  " + kvLine("disableAutoMode",
 			fmt.Sprintf("%s %s", m.DisableAutoMode.Value, scopeTag(m.DisableAutoMode.Scope))))
+	}
+	if m.SkipDangerousModePermissionPrompt.Set {
+		add("  " + kvLine("skipDangerousModePermissionPrompt",
+			fmt.Sprintf("%t %s",
+				m.SkipDangerousModePermissionPrompt.Value,
+				scopeTag(m.SkipDangerousModePermissionPrompt.Scope))))
+		if m.SkipDangerousModePermissionPrompt.Value {
+			add("  " + th.Muted.Render("bypass-permissions-mode dialog already accepted"))
+		}
 	}
 	add("")
 
@@ -108,22 +118,82 @@ func (p *effectivePage) build() []*node {
 	add("  " + kvLine("additionalDirectories", fmt.Sprintf("%d", len(m.AdditionalDirectories))))
 	add("")
 
-	// --- Schema drift ---
+	// --- Schema coverage ---
 	add(section("Schema coverage"))
-	unknown, warnings := p.driftCounts()
-	if unknown == 0 && warnings == 0 {
-		add("  " + th.Success.Render("✓ all keys recognized by the typed model"))
+	classified, cov := ccsettings.ClassifySources(p.data.Sources)
+	add("  " + th.Muted.Render(fmt.Sprintf(
+		"%d typed · %d schema-known passthrough · %d unknown (of %d top-level keys)",
+		cov.Typed, cov.PassthroughKnown, cov.Unknown, cov.Total)))
+
+	// Schema-known passthrough: keys our model does not type but the vendored
+	// schema describes. Surface the schema's type + description so they are no
+	// longer opaque.
+	hasPassthrough := false
+	for _, ck := range classified {
+		if ck.Class != ccsettings.ClassPassthroughKnown {
+			continue
+		}
+		if !hasPassthrough {
+			add("")
+			add("  " + th.Bold.Render("Schema-known passthrough"))
+			hasPassthrough = true
+		}
+		head := "  " + th.Warning.Render(ck.Key)
+		if ck.Schema != nil && ck.Schema.Type != "" {
+			head += " " + th.Muted.Render("("+ck.Schema.Type+")")
+		}
+		add(head)
+		if ck.Schema != nil {
+			if desc := firstLine(ck.Schema.Description); desc != "" {
+				add("    " + th.Muted.Render(desc))
+			}
+			if len(ck.Schema.Enum) > 0 {
+				add("    " + th.Muted.Render("enum: "+strings.Join(ck.Schema.Enum, ", ")))
+			}
+		}
+	}
+
+	// Unknown: in neither the model nor the schema — the true forward-compat
+	// tail. These still round-trip; they are the drift signal worth watching.
+	hasUnknown := false
+	for _, ck := range classified {
+		if ck.Class != ccsettings.ClassUnknown {
+			continue
+		}
+		if !hasUnknown {
+			add("")
+			add("  " + th.Bold.Render("Unknown (not in model or schema)"))
+			hasUnknown = true
+		}
+		add("  " + th.Error.Render(ck.Key))
+	}
+
+	if !hasPassthrough && !hasUnknown {
+		add("  " + th.Success.Render("✓ all keys recognized by the typed model or schema"))
 	} else {
-		if unknown > 0 {
-			add("  " + th.Warning.Render(fmt.Sprintf("%d unknown key(s) preserved as passthrough", unknown)))
-		}
-		if warnings > 0 {
-			add("  " + th.Warning.Render(fmt.Sprintf("%d decode warning(s) — value did not match expected shape", warnings)))
-		}
-		add("  " + th.Muted.Render("unknown keys round-trip safely; this is a forward-compat drift signal"))
+		add("")
+		add("  " + th.Muted.Render("passthrough/unknown keys round-trip safely; a forward-compat drift signal"))
+	}
+
+	// Decode warnings: known keys whose value did not match the expected shape.
+	if _, warnings := p.driftCounts(); warnings > 0 {
+		add("")
+		add("  " + th.Warning.Render(fmt.Sprintf(
+			"%d decode warning(s) — a typed key's value did not match its expected shape", warnings)))
 	}
 
 	return rows
+}
+
+// firstLine returns the first non-empty line of a multi-line schema
+// description, trimmed, for a compact one-line render.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // driftCounts totals unknown keys and decode warnings across every parsed scope.

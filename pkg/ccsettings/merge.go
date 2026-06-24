@@ -68,6 +68,10 @@ type MergedSettings struct {
 	DisableBypassPermissionsMode ProvenancedString
 	DisableAutoMode              ProvenancedString
 
+	// SkipDangerousModePermissionPrompt is a top-level permission-adjacent
+	// toggle (bypass-mode dialog acceptance); precedence wins.
+	SkipDangerousModePermissionPrompt ProvenancedBool
+
 	// Managed lockdowns (resolved from the managed scope only).
 	AllowManagedPermissionRulesOnly bool
 	AllowManagedReadPathsOnly       bool
@@ -149,6 +153,12 @@ func Merge(sources []SourceFile, opts MergeOptions) *MergedSettings {
 
 	// --- Permission scalars (precedence) ---
 	for _, ss := range lowToHigh {
+		// SkipDangerousModePermissionPrompt is top-level, not under permissions.
+		if ss.s.SkipDangerousModePermissionPrompt != nil {
+			m.SkipDangerousModePermissionPrompt = ProvenancedBool{
+				Set: true, Value: *ss.s.SkipDangerousModePermissionPrompt, Scope: ss.scope,
+			}
+		}
 		if ss.s.Permissions == nil {
 			continue
 		}
