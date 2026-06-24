@@ -47,7 +47,7 @@ func Load() (*Data, error) {
 		return nil, err
 	}
 	home, _ := os.UserHomeDir()
-	projectRoot := findProjectRoot(cwd)
+	projectRoot := findProjectRoot(cwd, home)
 
 	sources, err := ccsettings.Discover(ccsettings.DiscoverOptions{
 		ProjectRoot: projectRoot,
@@ -85,15 +85,24 @@ func Load() (*Data, error) {
 // Claude's project/local scope files — the nearest ancestor containing a
 // .claude directory or a .git repository. It falls back to start when neither
 // is found so discovery still has a stable anchor.
-func findProjectRoot(start string) string {
+// findProjectRoot walks up from start to find the project root — the nearest
+// ancestor containing a .git or .claude directory. The home directory is NOT a
+// valid project root: ~/.claude is the User settings scope, not a project
+// marker, so latching onto it would make the Project scope file resolve to the
+// same path as the User scope. Returns "" when no project directory is found
+// below home (i.e. we are not inside a project).
+func findProjectRoot(start, home string) string {
 	dir := start
 	for {
-		if isDir(filepath.Join(dir, ".claude")) || isDir(filepath.Join(dir, ".git")) {
+		if dir == home {
+			return ""
+		}
+		if isDir(filepath.Join(dir, ".git")) || isDir(filepath.Join(dir, ".claude")) {
 			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return start
+			return ""
 		}
 		dir = parent
 	}

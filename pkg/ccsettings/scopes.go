@@ -67,12 +67,16 @@ var fileScopesByPrecedence = []Scope{ScopeManaged, ScopeLocal, ScopeProject, Sco
 // SourceFile is one discovered settings file (or its expected location, when
 // absent), with its parsed contents and any parse error.
 type SourceFile struct {
-	Scope      Scope
-	Path       string
-	Exists     bool
-	Settings   *Settings // nil when the file is absent or failed to parse
-	ParseError error
-	Raw        []byte
+	Scope  Scope
+	Path   string
+	Exists bool
+	// NotInProject is set for the Project and Local scopes when there is no
+	// project directory distinct from the user's home, so they would otherwise
+	// resolve to the same file as the User scope (~/.claude/settings.json).
+	NotInProject bool
+	Settings     *Settings // nil when the file is absent or failed to parse
+	ParseError   error
+	Raw          []byte
 }
 
 // DiscoverOptions parameterizes scope-file discovery. The override fields exist
@@ -155,14 +159,19 @@ func Discover(opts DiscoverOptions) ([]SourceFile, error) {
 		}
 		home = h
 	}
-	if opts.ProjectRoot == "" {
-		if wd, err := os.Getwd(); err == nil {
-			opts.ProjectRoot = wd
-		}
-	}
+	// The Project and Local scopes are anchored at the project root. They only
+	// apply when there is a project directory distinct from the user's home —
+	// otherwise <projectRoot>/.claude/settings.json would be the very same file
+	// as the User scope. We do NOT fall back to the process cwd here, because a
+	// cwd of (or under) home would re-introduce that collapse.
+	projectApplicable := opts.ProjectRoot != "" && opts.ProjectRoot != home
 
 	var files []SourceFile
 	for _, scope := range fileScopesByPrecedence {
+		if (scope == ScopeProject || scope == ScopeLocal) && !projectApplicable {
+			files = append(files, SourceFile{Scope: scope, NotInProject: true})
+			continue
+		}
 		path, ok := scopePath(scope, opts, goos, home)
 		if !ok {
 			continue

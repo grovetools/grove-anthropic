@@ -64,12 +64,13 @@ type jsonContext struct {
 }
 
 type jsonScope struct {
-	Scope      string `json:"scope"`
-	Path       string `json:"path"`
-	Exists     bool   `json:"exists"`
-	Managed    bool   `json:"managed"`
-	ParseError string `json:"parseError,omitempty"`
-	Unknown    int    `json:"unknownKeys,omitempty"`
+	Scope        string `json:"scope"`
+	Path         string `json:"path"`
+	Exists       bool   `json:"exists"`
+	Managed      bool   `json:"managed"`
+	NotInProject bool   `json:"notInProject,omitempty"`
+	ParseError   string `json:"parseError,omitempty"`
+	Unknown      int    `json:"unknownKeys,omitempty"`
 }
 
 type jsonRule struct {
@@ -140,10 +141,11 @@ func toJSONSources(sources []ccsettings.SourceFile) []jsonScope {
 	out := make([]jsonScope, 0, len(sources))
 	for _, sf := range sources {
 		js := jsonScope{
-			Scope:   sf.Scope.Label(),
-			Path:    sf.Path,
-			Exists:  sf.Exists,
-			Managed: sf.Scope == ccsettings.ScopeManaged,
+			Scope:        sf.Scope.Label(),
+			Path:         sf.Path,
+			Exists:       sf.Exists,
+			Managed:      sf.Scope == ccsettings.ScopeManaged,
+			NotInProject: sf.NotInProject,
 		}
 		if sf.ParseError != nil {
 			js.ParseError = sf.ParseError.Error()
