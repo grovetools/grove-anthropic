@@ -37,7 +37,7 @@ type commandsPage struct {
 	active   *jobArtifacts // the opened job, or nil in modeJobs
 	commands []command
 
-	ladderFor string             // command string the ladder was built for
+	ladderFor string // command string the ladder was built for
 	ladder    []ccsettings.RuleRung
 	ladderCur int
 
@@ -60,7 +60,7 @@ var (
 
 func newCommandsPage(d *Data) *commandsPage {
 	p := &commandsPage{data: d, tv: newTreeView(true)}
-	p.jobs = discoverJobArtifacts(workingDir())
+	p.jobs = discoverAllJobArtifacts(workingDir())
 	p.mode = modeJobs
 	p.rebuild()
 	return p
@@ -287,7 +287,7 @@ func (p *commandsPage) goBack() bool {
 // up without leaving the page.
 func (p *commandsPage) refresh() {
 	if p.mode == modeJobs {
-		p.jobs = discoverJobArtifacts(workingDir())
+		p.jobs = discoverAllJobArtifacts(workingDir())
 		p.rebuild()
 		return
 	}

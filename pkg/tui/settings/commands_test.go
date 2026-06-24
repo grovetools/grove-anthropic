@@ -183,3 +183,47 @@ func TestDiscoverJobArtifacts(t *testing.T) {
 		}
 	}
 }
+
+// TestDiscoverFlowJobArtifacts verifies that flow-launched jobs are found via the
+// hook session registry even when the tool runs from an unrelated directory — the
+// case that the cwd-only walk misses (worktree cwd vs notebook plan dir).
+func TestDiscoverFlowJobArtifacts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROVE_HOME", home) // -> StateDir() == $GROVE_HOME/state/grove
+
+	// A plan dir (anywhere) with a job's commands.jsonl, like the notebook.
+	planDir := filepath.Join(home, "notebooks", "ws", "plans", "myplan")
+	jobDir := filepath.Join(planDir, ".artifacts", "job-abc")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "commands.jsonl"),
+		[]byte(`{"phase":"post","link_id":"x","command":"ls","outcome":"ran_ok"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A session registry entry pointing at that plan's job file.
+	sessDir := filepath.Join(home, "state", "grove", "hooks", "sessions", "sess-1")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"job_file_path":"` + filepath.Join(planDir, "01-job.md") + `"}`
+	if err := os.WriteFile(filepath.Join(sessDir, "metadata.json"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Discovery from a totally unrelated cwd must still find the job.
+	jobs := discoverFlowJobArtifacts()
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 flow job, got %d: %+v", len(jobs), jobs)
+	}
+	if jobs[0].JobName != "job-abc" || jobs[0].PlanDir != planDir {
+		t.Errorf("got %+v", jobs[0])
+	}
+
+	// And the merged discovery from an unrelated start dir includes it.
+	all := discoverAllJobArtifacts(t.TempDir())
+	if len(all) != 1 {
+		t.Fatalf("merged discovery expected 1, got %d", len(all))
+	}
+}
