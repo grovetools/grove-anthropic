@@ -40,6 +40,9 @@ type Decision struct {
 	// rule matched: Claude removes the tool from its context entirely rather
 	// than just blocking the specific call.
 	RemovedFromContext bool
+	// Note optionally explains a decision the rules alone don't account for —
+	// e.g. a command that prompts because it contains a shell expansion.
+	Note string
 }
 
 // ToolCall describes a tool invocation to evaluate. Only the fields relevant to
@@ -185,6 +188,18 @@ func (e *Engine) evaluateBash(call ToolCall) Decision {
 	for _, r := range e.allow {
 		if e.matchTool(r.ParsedRule, call.Tool, tierAllow) && r.Kind == SpecNone {
 			return Decision{Result: ResultAllow, MatchedRule: r.Raw, SourceScope: r.Scope}
+		}
+	}
+	// A content-scoped allow rule cannot auto-approve a command containing a
+	// shell expansion — Claude prompts regardless ("Contains simple_expansion"),
+	// because the expanded text is not knowable from the literal pattern. (A bare
+	// whole-tool Bash allow, handled above, still covers it.)
+	for _, sub := range subs {
+		if ContainsShellExpansion(sub) {
+			return Decision{
+				Result: ResultPrompt,
+				Note:   "contains a shell expansion — not auto-approvable by a content allow rule",
+			}
 		}
 	}
 	if rule, scope, ok := e.everySubcommandAllowed(call, subs); ok {

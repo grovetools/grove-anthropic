@@ -38,7 +38,7 @@ type commandsPage struct {
 	commands []command
 
 	ladderFor string // command string the ladder was built for
-	ladder    []ccsettings.RuleRung
+	ladders   []ccsettings.CommandLadder
 	ladderCur int
 
 	width  int
@@ -150,12 +150,24 @@ func (p *commandsPage) buildLadder() []*node {
 	th := theme.DefaultTheme
 	header := leaf(th.Muted.Render("Command: ")+th.Normal.Render(truncateCmd(p.ladderFor, 90)), nil)
 	roots := []*node{header}
-	for _, rung := range p.ladder {
-		label := fmt.Sprintf("%s  %s",
-			th.Bold.Render(rung.Rule),
-			th.Muted.Render("("+rung.Label+")"),
-		)
-		roots = append(roots, leaf(label, rungPayload{rung: rung}))
+	// Group rungs by subcommand; show a non-selectable note for subcommands that
+	// can't be allow-listed (e.g. they contain a shell expansion).
+	multi := len(p.ladders) > 1
+	for _, l := range p.ladders {
+		if multi {
+			roots = append(roots, leaf(th.Muted.Render("  "+truncateCmd(l.Subcommand, 80)), nil))
+		}
+		if l.Note != "" {
+			roots = append(roots, leaf(th.Muted.Render("    ⚠ "+l.Note), nil))
+			continue
+		}
+		for _, rung := range l.Rungs {
+			label := fmt.Sprintf("%s  %s",
+				th.Bold.Render(rung.Rule),
+				th.Muted.Render("("+rung.Label+")"),
+			)
+			roots = append(roots, leaf(label, rungPayload{rung: rung}))
+		}
 	}
 	return roots
 }
@@ -228,15 +240,21 @@ func (p *commandsPage) openJob(j jobArtifacts) {
 // to the ladder view. For a compound command, the ladders of every subcommand
 // are concatenated so each subcommand's rules are pickable.
 func (p *commandsPage) openLadder(c command) {
-	var rungs []ccsettings.RuleRung
-	for _, l := range ccsettings.SynthesizeLadders("Bash", c.Command) {
-		rungs = append(rungs, l.Rungs...)
+	ladders := ccsettings.SynthesizeLadders("Bash", c.Command)
+	// Open if there's anything to show — either pickable rungs or an
+	// explanatory note (e.g. a subcommand that can't be allow-listed).
+	any := false
+	for _, l := range ladders {
+		if len(l.Rungs) > 0 || l.Note != "" {
+			any = true
+			break
+		}
 	}
-	if len(rungs) == 0 {
+	if !any {
 		return
 	}
 	p.ladderFor = c.Command
-	p.ladder = rungs
+	p.ladders = ladders
 	p.mode = modeLadder
 	p.tv.cursor = 0
 	p.rebuild()

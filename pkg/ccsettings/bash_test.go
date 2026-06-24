@@ -86,3 +86,55 @@ func TestStripWrappers(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitCompoundKeepsRedirections(t *testing.T) {
+	// 2>&1 must not be split on its inner & into a phantom `1` subcommand.
+	got := SplitCompound("git status 2>&1 | head -30")
+	want := []string{"git status 2>&1", "head -30"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SplitCompound = %q, want %q", got, want)
+	}
+	// A real background & still splits.
+	if got := SplitCompound("sleep 1 & echo hi"); !reflect.DeepEqual(got, []string{"sleep 1", "echo hi"}) {
+		t.Errorf("background split = %q", got)
+	}
+}
+
+func TestStripRedirections(t *testing.T) {
+	cases := map[string]string{
+		"git status 2>&1":       "git status",
+		"cd /x 2>/dev/null":     "cd /x",
+		"cmd 2>/dev/null > out": "cmd",
+		"echo hi":               "echo hi",
+		"grep foo > /tmp/f":     "grep foo",
+		"sort < in.txt":         "sort",
+	}
+	for in, want := range cases {
+		if got := StripRedirections(in); got != want {
+			t.Errorf("StripRedirections(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestContainsShellExpansion(t *testing.T) {
+	yes := []string{`echo "$status"`, "echo ${HOME}", "echo $(date)", "echo `pwd`", "x=$?"}
+	no := []string{"git status", "echo hello", "ls -la /tmp", "head -30"}
+	for _, c := range yes {
+		if !ContainsShellExpansion(c) {
+			t.Errorf("expected expansion in %q", c)
+		}
+	}
+	for _, c := range no {
+		if ContainsShellExpansion(c) {
+			t.Errorf("did not expect expansion in %q", c)
+		}
+	}
+}
+
+func TestShellFieldsKeepsQuotedSpans(t *testing.T) {
+	got := shellFields(`echo "---EXIT: done---" tail`)
+	want := []string{"echo", `"---EXIT: done---"`, "tail"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("shellFields = %q, want %q", got, want)
+	}
+}

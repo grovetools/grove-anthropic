@@ -40,11 +40,17 @@ type RuleRung struct {
 // token, or when trimming produces the same prefix) are collapsed. tool is the
 // shell tool name to wrap the specifier in ("Bash" or "PowerShell").
 func SynthesizeBashLadder(tool, command string) []RuleRung {
-	inner := strings.TrimSpace(StripWrappers(strings.TrimSpace(command)))
+	inner := strings.TrimSpace(StripRedirections(StripWrappers(strings.TrimSpace(command))))
 	if inner == "" {
 		return nil
 	}
-	tokens := strings.Fields(inner)
+	// A command containing a shell expansion cannot be allow-listed by a content
+	// rule (Claude prompts regardless), so offer no rungs — the caller surfaces a
+	// note via SynthesizeLadders instead.
+	if ContainsShellExpansion(inner) {
+		return nil
+	}
+	tokens := shellFields(inner)
 	if len(tokens) == 0 {
 		return nil
 	}
@@ -67,16 +73,19 @@ func SynthesizeBashLadder(tool, command string) []RuleRung {
 		})
 	}
 
-	// Exact rung: the whole command verbatim. Width is the full token count so
-	// it always sorts first (most specific).
-	add(inner, "exact", len(tokens))
+	// Exact rung: the whole command verbatim. Width is len+1 so the verbatim
+	// rung always sorts ahead of the all-tokens "+ args" rung below (which pins
+	// the same token count).
+	add(inner, "exact", len(tokens)+1)
 
-	// Prefix rungs: pin the first k tokens (k from len-1 down to 1) and append
-	// the word-boundary wildcard. `npm run test src/foo.ts` →
+	// Prefix rungs: pin the first k tokens (k from len down to 1) and append the
+	// word-boundary wildcard. Starting at k=len yields the useful "this command
+	// with any arguments" rung even for a command that took none, e.g.
+	// `git status` → `git status *`; `npm run test src/foo.ts` →
 	//   k=3: npm run test *   (prefix)
 	//   k=2: npm run *        (family)
 	//   k=1: npm *            (broad)
-	for k := len(tokens) - 1; k >= 1; k-- {
+	for k := len(tokens); k >= 1; k-- {
 		spec := strings.Join(tokens[:k], " ") + " *"
 		add(spec, ladderLabel(k, len(tokens)), k)
 	}
@@ -101,9 +110,14 @@ func ladderLabel(width, total int) string {
 // CommandLadder bundles a subcommand with the ladder synthesized for it. A
 // compound command yields one CommandLadder per subcommand.
 type CommandLadder struct {
-	// Subcommand is the wrapper-stripped subcommand the ladder generalizes.
+	// Subcommand is the wrapper/redirection-stripped subcommand the ladder
+	// generalizes.
 	Subcommand string
 	Rungs      []RuleRung
+	// Note is set (with Rungs nil) when the subcommand cannot be allow-listed —
+	// currently when it contains a shell expansion — to explain why no rungs are
+	// offered.
+	Note string
 }
 
 // SynthesizeLadders splits a (possibly compound) Bash command into its
@@ -115,7 +129,17 @@ func SynthesizeLadders(tool, command string) []CommandLadder {
 	subs := SplitCompound(command)
 	out := make([]CommandLadder, 0, len(subs))
 	for _, sub := range subs {
-		stripped := StripWrappers(strings.TrimSpace(sub))
+		stripped := strings.TrimSpace(StripRedirections(StripWrappers(strings.TrimSpace(sub))))
+		if stripped == "" {
+			continue
+		}
+		if ContainsShellExpansion(stripped) {
+			out = append(out, CommandLadder{
+				Subcommand: stripped,
+				Note:       "contains a shell expansion ($…/`…`) — Claude prompts regardless of any allow rule; approve interactively or rewrite without the expansion",
+			})
+			continue
+		}
 		rungs := SynthesizeBashLadder(tool, stripped)
 		if len(rungs) == 0 {
 			continue
