@@ -15,12 +15,21 @@ var compoundSeparators = []string{"&&", "||", "|&", "&", "|", ";", "\n", "\r"}
 // SplitCompound splits a Bash command string into its subcommands on shell
 // operators. It is intentionally naive about quoting (matching Claude's own
 // "match each subcommand independently" rule). Empty fragments are dropped.
+//
+// The lone `&` separator (background) is split with redirection awareness so a
+// file-descriptor redirection like `2>&1`, `>&2`, or `&>file` is NOT torn apart
+// into a phantom subcommand — splitting `git status 2>&1` on a naive `&` would
+// otherwise yield the bogus subcommands `git status 2>` and `1`.
 func SplitCompound(cmd string) []string {
 	parts := []string{cmd}
 	for _, sep := range compoundSeparators {
 		var next []string
 		for _, p := range parts {
-			next = append(next, strings.Split(p, sep)...)
+			if sep == "&" {
+				next = append(next, splitBackgroundAmp(p)...)
+			} else {
+				next = append(next, strings.Split(p, sep)...)
+			}
 		}
 		parts = next
 	}
@@ -30,6 +39,105 @@ func SplitCompound(cmd string) []string {
 			out = append(out, t)
 		}
 	}
+	return out
+}
+
+// splitBackgroundAmp splits s on a background/separator `&`, but never on an `&`
+// that belongs to a redirection (`>&`, `<&`, or `&>`), so redirections stay
+// attached to their command.
+func splitBackgroundAmp(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] != '&' {
+			continue
+		}
+		var prev, nextc byte = ' ', ' '
+		if i > 0 {
+			prev = s[i-1]
+		}
+		if i+1 < len(s) {
+			nextc = s[i+1]
+		}
+		if prev == '>' || prev == '<' || nextc == '>' {
+			continue // part of a redirection (2>&1, >&2, &>file)
+		}
+		out = append(out, s[start:i])
+		start = i + 1
+	}
+	return append(out, s[start:])
+}
+
+// redirToken matches a leading shell redirection operator on a token, optionally
+// with an attached fd-dup (`&1`) or attached target (`2>/dev/null`).
+var redirToken = regexp.MustCompile(`^([0-9]*(?:>>|<<<|<<|>|<)&?[0-9]*|&>>?)`)
+
+// StripRedirections removes shell redirection operators and their targets from a
+// command so synthesized rules ignore IO plumbing: `git status 2>&1` becomes
+// `git status`, and `cmd 2>/dev/null > out` becomes `cmd`. It is quote-naive,
+// which is fine because redirection operators are not normally quoted; a `>`
+// inside a quoted argument is not at a token boundary and is left untouched.
+func StripRedirections(cmd string) string {
+	tokens := strings.Fields(cmd)
+	out := make([]string, 0, len(tokens))
+	for i := 0; i < len(tokens); i++ {
+		op := redirToken.FindString(tokens[i])
+		if op == "" {
+			out = append(out, tokens[i])
+			continue
+		}
+		rest := tokens[i][len(op):]
+		// A bare operator (no attached target, no fd-dup) consumes the next
+		// token as its target: `>` `file`, `2>` `/dev/null`.
+		if rest == "" && !strings.Contains(op, "&") && i+1 < len(tokens) {
+			i++
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// shellExpansion matches an unexpanded shell expansion: $VAR, ${...}, $(...),
+// $?/$@/$1/etc., or a backtick command substitution.
+var shellExpansion = regexp.MustCompile("`" + `|\$[\w{(*?!@#-]`)
+
+// ContainsShellExpansion reports whether a command contains a shell variable or
+// command expansion. Such commands cannot be auto-approved by a content-scoped
+// allow rule — Claude Code prompts regardless ("Contains simple_expansion"),
+// because the expanded text is not knowable from the literal pattern.
+func ContainsShellExpansion(cmd string) bool {
+	return shellExpansion.MatchString(cmd)
+}
+
+// shellFields splits a command into whitespace-separated tokens but keeps a
+// single- or double-quoted span (including its quotes) as one token, so prefix
+// rungs never cut inside a quoted argument.
+func shellFields(s string) []string {
+	var out []string
+	var cur strings.Builder
+	var quote rune
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			cur.WriteRune(r)
+			if r == quote {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+			cur.WriteRune(r)
+		case r == ' ' || r == '\t':
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
 	return out
 }
 
