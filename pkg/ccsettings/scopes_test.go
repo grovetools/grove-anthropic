@@ -118,3 +118,36 @@ func writeFixture(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestDiscoverNoProjectDoesNotCollapseOntoUser(t *testing.T) {
+	home := t.TempDir()
+	// home has a .claude/settings.json (the User scope) — but no separate project.
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ProjectRoot == home (the bug scenario) must NOT yield a Project file equal
+	// to the User file; Project/Local are flagged NotInProject instead.
+	sources, err := Discover(DiscoverOptions{HomeDir: home, ProjectRoot: home, GOOS: "darwin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var userPath string
+	for _, sf := range sources {
+		if sf.Scope == ScopeUser {
+			userPath = sf.Path
+		}
+	}
+	for _, sf := range sources {
+		if sf.Scope == ScopeProject || sf.Scope == ScopeLocal {
+			if !sf.NotInProject {
+				t.Errorf("%v scope should be NotInProject when project root == home", sf.Scope)
+			}
+			if sf.Path == userPath && userPath != "" {
+				t.Errorf("%v scope path %q collapsed onto User path", sf.Scope, sf.Path)
+			}
+		}
+	}
+}

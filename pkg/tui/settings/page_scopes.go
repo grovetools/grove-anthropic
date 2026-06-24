@@ -78,6 +78,9 @@ func (p *scopesPage) build() []*node {
 
 func (p *scopesPage) rowLabel(sf ccsettings.SourceFile) string {
 	th := theme.DefaultTheme
+	if sf.NotInProject {
+		return scopeTag(sf.Scope) + " " + th.Muted.Render("(not in a project — no project directory here)")
+	}
 	var parts []string
 	parts = append(parts, scopeTag(sf.Scope), existsGlyph(sf.Exists), abbrevPath(sf.Path, p.data.Ctx.HomeDir))
 
