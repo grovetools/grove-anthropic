@@ -67,6 +67,11 @@ func (p *sandboxPage) build() []*node {
 
 	// --- Filesystem boundary ---
 	add(section("Filesystem boundary"))
+	if p.data.FS.SandboxEnabled {
+		add("  " + th.Success.Render("✓ OS-enforced (sandbox enabled)"))
+	} else {
+		add("  " + th.Muted.Render("sandbox disabled — not OS-enforced; shown as the no-prompt scope"))
+	}
 	p.boundarySection(&rows, "Writable", p.data.FS.AllowWrite, p.data.FS.DenyWrite)
 	p.boundarySection(&rows, "Readable", p.data.FS.AllowRead, p.data.FS.DenyRead)
 	if m.AllowManagedReadPathsOnly {

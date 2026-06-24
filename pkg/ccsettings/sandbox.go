@@ -14,10 +14,15 @@ type BoundaryEntry struct {
 // FilesystemBoundary is the effective read/write boundary, merging
 // sandbox.filesystem.* with Read/Edit permission rules and additionalDirectories.
 type FilesystemBoundary struct {
-	AllowWrite []BoundaryEntry
-	DenyWrite  []BoundaryEntry
-	AllowRead  []BoundaryEntry
-	DenyRead   []BoundaryEntry
+	// SandboxEnabled reflects whether the OS sandbox is on. When false, the
+	// boundary is not OS-enforced — the entries describe the no-prompt scope
+	// rather than a hard limit, and the read default is the working dir instead
+	// of the entire filesystem.
+	SandboxEnabled bool
+	AllowWrite     []BoundaryEntry
+	DenyWrite      []BoundaryEntry
+	AllowRead      []BoundaryEntry
+	DenyRead       []BoundaryEntry
 }
 
 // ComputeFilesystemBoundary folds the sandbox.filesystem arrays, the Edit allow
@@ -31,12 +36,32 @@ func ComputeFilesystemBoundary(m *MergedSettings) FilesystemBoundary {
 	ctx := m.Context
 	var fb FilesystemBoundary
 
-	// Implicit defaults: the working directory is readable+writable; the rest
-	// of the computer is readable (subject to denyRead).
+	// Implicit defaults depend on whether the OS sandbox is enabled.
+	//
+	//   - Write: the working directory (and, under the sandbox, the session temp
+	//     dir) is writable. Without the sandbox there is no OS write boundary;
+	//     the working dir is what Claude edits without prompting.
+	//   - Read: under the sandbox the default is the ENTIRE computer minus
+	//     denyRead — which still exposes credential files like ~/.ssh and
+	//     ~/.aws/credentials unless they are denied. Without the sandbox there is
+	//     no OS read boundary; the working dir is what Claude reads without
+	//     prompting.
+	sandboxOn := m.SandboxEnabled.Value
+	fb.SandboxEnabled = sandboxOn
 	if ctx.CWD != "" {
 		cwd := absCandidate(".", ctx)
 		fb.AllowWrite = append(fb.AllowWrite, BoundaryEntry{Path: cwd, Raw: ".", Source: "default:workingDirectory"})
-		fb.AllowRead = append(fb.AllowRead, BoundaryEntry{Path: cwd, Raw: ".", Source: "default:workingDirectory"})
+		if !sandboxOn {
+			fb.AllowRead = append(fb.AllowRead, BoundaryEntry{Path: cwd, Raw: ".", Source: "default:workingDirectory"})
+		}
+	}
+	if sandboxOn {
+		fb.AllowRead = append(fb.AllowRead, BoundaryEntry{
+			Path: "/", Raw: "/", Source: "default:sandbox (entire filesystem, minus denyRead)",
+		})
+		fb.AllowWrite = append(fb.AllowWrite, BoundaryEntry{
+			Path: "$TMPDIR", Raw: "", Source: "default:sandbox (session temp dir)",
+		})
 	}
 
 	// sandbox.filesystem arrays.

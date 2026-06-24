@@ -97,3 +97,35 @@ func TestComputeNetworkPolicyManagedDomainsOnly(t *testing.T) {
 		t.Errorf("managed-allowed domain should be allowed, got %+v", d)
 	}
 }
+
+func TestComputeFilesystemBoundarySandboxReadDefault(t *testing.T) {
+	// Sandbox ENABLED: read default is the entire filesystem (minus denyRead),
+	// not just the working directory; write default adds the session temp dir.
+	on := mergedFromJSON(t, map[Scope]string{
+		ScopeLocal: `{"sandbox":{"enabled":true}}`,
+	})
+	on.Context = ResolveContext{CWD: "/proj", ProjectRoot: "/proj"}
+	fb := ComputeFilesystemBoundary(on)
+	if !fb.SandboxEnabled {
+		t.Error("SandboxEnabled should be true")
+	}
+	if !hasEntry(fb.AllowRead, "default:sandbox (entire filesystem, minus denyRead)", "/") {
+		t.Errorf("sandbox-on read default should be the entire filesystem: %+v", fb.AllowRead)
+	}
+	for _, e := range fb.AllowRead {
+		if e.Source == "default:workingDirectory" {
+			t.Errorf("sandbox-on should not add a working-dir read default (entire FS supersedes it): %+v", fb.AllowRead)
+		}
+	}
+
+	// Sandbox DISABLED: read default is the working dir (no OS boundary).
+	off := mergedFromJSON(t, map[Scope]string{ScopeLocal: `{}`})
+	off.Context = ResolveContext{CWD: "/proj", ProjectRoot: "/proj"}
+	fbOff := ComputeFilesystemBoundary(off)
+	if fbOff.SandboxEnabled {
+		t.Error("SandboxEnabled should be false")
+	}
+	if !hasEntry(fbOff.AllowRead, "default:workingDirectory", ".") {
+		t.Errorf("sandbox-off read default should be the working dir: %+v", fbOff.AllowRead)
+	}
+}
