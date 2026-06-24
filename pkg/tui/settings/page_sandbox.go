@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/grovetools/core/tui/components/pager"
@@ -132,10 +133,11 @@ func (p *sandboxPage) boundarySection(rows *[]*node, title string, allow, deny [
 func (p *sandboxPage) boundaryRow(sign string, e ccsettings.BoundaryEntry) string {
 	th := theme.DefaultTheme
 	src := th.Muted.Render(e.Source)
-	// Implicit defaults (e.g. the working directory) carry no real scope, so
-	// only tag entries that came from an actual settings file.
+	// Implicit defaults (the working directory, and the sandbox's built-in
+	// entire-filesystem / session-temp defaults) carry no real scope, so only
+	// tag entries that came from an actual settings file.
 	scopeBit := ""
-	if e.Source != "default:workingDirectory" {
+	if !strings.HasPrefix(e.Source, "default:") {
 		scopeBit = " " + scopeTag(e.Scope)
 	}
 	return fmt.Sprintf("    %s %s%s  %s", sign, e.Path, scopeBit, src)
