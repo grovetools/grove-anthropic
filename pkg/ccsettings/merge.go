@@ -81,6 +81,9 @@ type MergedSettings struct {
 	SandboxEnabled                  ProvenancedBool
 	SandboxFailIfUnavailable        ProvenancedBool
 	SandboxAllowUnsandboxedCommands ProvenancedBool
+	// SandboxAutoAllowBashIfSandboxed is the auto-allow mode toggle. Defaults to
+	// true when the sandbox is enabled; see EffectiveAutoAllowBash.
+	SandboxAutoAllowBashIfSandboxed ProvenancedBool
 	SandboxExcludedCommands         []ProvenancedString
 
 	// Sandbox filesystem arrays (raw; ComputeFilesystemBoundary folds in
@@ -188,6 +191,9 @@ func Merge(sources []SourceFile, opts MergeOptions) *MergedSettings {
 		}
 		if sb.AllowUnsandboxedCommands != nil {
 			m.SandboxAllowUnsandboxedCommands = ProvenancedBool{Set: true, Value: *sb.AllowUnsandboxedCommands, Scope: ss.scope}
+		}
+		if sb.AutoAllowBashIfSandboxed != nil {
+			m.SandboxAutoAllowBashIfSandboxed = ProvenancedBool{Set: true, Value: *sb.AutoAllowBashIfSandboxed, Scope: ss.scope}
 		}
 	}
 

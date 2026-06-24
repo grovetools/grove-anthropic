@@ -64,11 +64,11 @@ func Load() (*Data, error) {
 	}
 	merged := ccsettings.Merge(sources, ccsettings.MergeOptions{Context: ctx})
 
-	// autoAllowBashIfSandboxed defaults on when the sandbox is enabled, which
-	// mirrors Claude's behavior of skipping the whole-tool Bash prompt for
-	// commands that run inside the sandbox boundary.
+	// autoAllowBashIfSandboxed defaults on when the sandbox is enabled but can be
+	// turned off (regular-permissions mode); EffectiveAutoAllowBash honors the
+	// explicit setting rather than assuming it tracks sandbox.enabled.
 	engine := ccsettings.NewEngine(merged, ccsettings.EngineOptions{
-		SandboxAutoAllowBash: merged.SandboxEnabled.Value,
+		SandboxAutoAllowBash: merged.EffectiveAutoAllowBash(),
 	})
 
 	return &Data{

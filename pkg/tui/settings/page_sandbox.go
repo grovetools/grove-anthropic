@@ -91,6 +91,15 @@ func (p *sandboxPage) build() []*node {
 	// --- Sandbox mode/flags ---
 	add(section("Sandbox"))
 	rows = append(rows, p.sandboxBoolRow("enabled", m.SandboxEnabled))
+	rows = append(rows, p.sandboxBoolRow("autoAllowBashIfSandboxed", m.SandboxAutoAllowBashIfSandboxed))
+	// Show the resolved mode, since autoAllowBashIfSandboxed defaults to true.
+	mode := "regular permissions (Bash still prompts)"
+	if m.EffectiveAutoAllowBash() {
+		mode = "auto-allow (sandboxed Bash runs without prompting)"
+	} else if !m.SandboxEnabled.Value {
+		mode = "n/a — sandbox disabled"
+	}
+	add("  " + th.Muted.Render("→ effective Bash mode: "+mode))
 	rows = append(rows, p.sandboxBoolRow("failIfUnavailable", m.SandboxFailIfUnavailable))
 	rows = append(rows, p.sandboxBoolRow("allowUnsandboxedCommands", m.SandboxAllowUnsandboxedCommands))
 	if len(m.SandboxExcludedCommands) == 0 {
