@@ -126,6 +126,7 @@ type Sandbox struct {
 	Enabled                  *bool    `json:"enabled,omitempty"`
 	FailIfUnavailable        *bool    `json:"failIfUnavailable,omitempty"`
 	AllowUnsandboxedCommands *bool    `json:"allowUnsandboxedCommands,omitempty"`
+	AutoAllowBashIfSandboxed *bool    `json:"autoAllowBashIfSandboxed,omitempty"`
 	ExcludedCommands         []string `json:"excludedCommands,omitempty"`
 
 	Filesystem *SandboxFilesystem `json:"filesystem,omitempty"`

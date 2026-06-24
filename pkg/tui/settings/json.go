@@ -115,6 +115,8 @@ type jsonPermissions struct {
 
 type jsonSandbox struct {
 	Enabled                   jsonProvBool   `json:"enabled"`
+	AutoAllowBashIfSandboxed  jsonProvBool   `json:"autoAllowBashIfSandboxed"`
+	EffectiveAutoAllowBash    bool           `json:"effectiveAutoAllowBash"`
 	FailIfUnavailable         jsonProvBool   `json:"failIfUnavailable"`
 	AllowUnsandboxedCommands  jsonProvBool   `json:"allowUnsandboxedCommands"`
 	ExcludedCommands          []jsonString   `json:"excludedCommands"`
@@ -212,6 +214,8 @@ func toJSONSandbox(d *Data) jsonSandbox {
 	m := d.Merged
 	return jsonSandbox{
 		Enabled:                   toJSONProvBool(m.SandboxEnabled),
+		AutoAllowBashIfSandboxed:  toJSONProvBool(m.SandboxAutoAllowBashIfSandboxed),
+		EffectiveAutoAllowBash:    m.EffectiveAutoAllowBash(),
 		FailIfUnavailable:         toJSONProvBool(m.SandboxFailIfUnavailable),
 		AllowUnsandboxedCommands:  toJSONProvBool(m.SandboxAllowUnsandboxedCommands),
 		ExcludedCommands:          toJSONStrings(m.SandboxExcludedCommands),

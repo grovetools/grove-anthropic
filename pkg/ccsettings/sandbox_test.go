@@ -129,3 +129,25 @@ func TestComputeFilesystemBoundarySandboxReadDefault(t *testing.T) {
 		t.Errorf("sandbox-off read default should be the working dir: %+v", fbOff.AllowRead)
 	}
 }
+
+func TestEffectiveAutoAllowBash(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want bool
+	}{
+		{"sandbox off -> false", `{"sandbox":{"enabled":false}}`, false},
+		{"enabled, unset -> default true", `{"sandbox":{"enabled":true}}`, true},
+		{"enabled, explicit true", `{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}`, true},
+		{"enabled, explicit false -> regular perms", `{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}}`, false},
+		{"autoAllow true but sandbox off -> false", `{"sandbox":{"autoAllowBashIfSandboxed":true}}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := mergedFromJSON(t, map[Scope]string{ScopeLocal: c.doc})
+			if got := m.EffectiveAutoAllowBash(); got != c.want {
+				t.Errorf("EffectiveAutoAllowBash = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

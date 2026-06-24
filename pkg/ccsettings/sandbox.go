@@ -32,6 +32,20 @@ type FilesystemBoundary struct {
 //
 // The default writable working directory and the default whole-computer read
 // access are represented as implicit entries so the boundary is self-describing.
+// EffectiveAutoAllowBash reports whether sandboxed Bash commands run without a
+// permission prompt (the sandbox "auto-allow" mode). It only applies when the
+// sandbox is enabled, and then defaults to true unless autoAllowBashIfSandboxed
+// is explicitly set to false (the "regular permissions" mode).
+func (m *MergedSettings) EffectiveAutoAllowBash() bool {
+	if !m.SandboxEnabled.Value {
+		return false
+	}
+	if m.SandboxAutoAllowBashIfSandboxed.Set {
+		return m.SandboxAutoAllowBashIfSandboxed.Value
+	}
+	return true
+}
+
 func ComputeFilesystemBoundary(m *MergedSettings) FilesystemBoundary {
 	ctx := m.Context
 	var fb FilesystemBoundary
