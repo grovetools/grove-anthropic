@@ -3,6 +3,8 @@ package settings
 import (
 	"encoding/json"
 	"io"
+	"os/exec"
+	"strings"
 
 	"github.com/grovetools/grove-anthropic/pkg/ccsettings"
 )
@@ -18,9 +20,10 @@ func PrintJSON(d *Data, w io.Writer) error {
 			ProjectRoot: d.Ctx.ProjectRoot,
 			HomeDir:     d.Ctx.HomeDir,
 		},
-		Sources:     toJSONSources(d.Sources),
-		Permissions: toJSONPermissions(d.Merged),
-		Sandbox:     toJSONSandbox(d),
+		Sources:        toJSONSources(d.Sources),
+		Permissions:    toJSONPermissions(d.Merged),
+		Sandbox:        toJSONSandbox(d),
+		SchemaCoverage: toJSONSchemaCoverage(d.Sources),
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -28,10 +31,30 @@ func PrintJSON(d *Data, w io.Writer) error {
 }
 
 type jsonOutput struct {
-	Context     jsonContext     `json:"context"`
-	Sources     []jsonScope     `json:"sources"`
-	Permissions jsonPermissions `json:"permissions"`
-	Sandbox     jsonSandbox     `json:"sandbox"`
+	Context        jsonContext        `json:"context"`
+	Sources        []jsonScope        `json:"sources"`
+	Permissions    jsonPermissions    `json:"permissions"`
+	Sandbox        jsonSandbox        `json:"sandbox"`
+	SchemaCoverage jsonSchemaCoverage `json:"schemaCoverage"`
+}
+
+// jsonSchemaCoverage classifies every top-level settings key observed across
+// the discovered scopes against the typed model and the vendored schema. It
+// replaces the bare per-scope "unknownKeys" count with a described breakdown:
+// typed keys, schema-known passthrough keys (enriched with type/description/
+// enum), and genuinely unknown keys (the forward-compat tail).
+type jsonSchemaCoverage struct {
+	Counts        ccsettings.SchemaCoverage `json:"counts"`
+	ClaudeVersion string                    `json:"claudeVersion,omitempty"`
+	Keys          []jsonClassifiedKey       `json:"keys"`
+}
+
+type jsonClassifiedKey struct {
+	Key         string   `json:"key"`
+	Class       string   `json:"class"`
+	Type        string   `json:"type,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
 }
 
 type jsonContext struct {
@@ -78,14 +101,15 @@ type jsonBoundary struct {
 }
 
 type jsonPermissions struct {
-	Allow                           []jsonRule   `json:"allow"`
-	Ask                             []jsonRule   `json:"ask"`
-	Deny                            []jsonRule   `json:"deny"`
-	AdditionalDirectories           []jsonString `json:"additionalDirectories"`
-	DefaultMode                     jsonScalar   `json:"defaultMode"`
-	DisableBypassPermissionsMode    jsonScalar   `json:"disableBypassPermissionsMode"`
-	DisableAutoMode                 jsonScalar   `json:"disableAutoMode"`
-	AllowManagedPermissionRulesOnly bool         `json:"allowManagedPermissionRulesOnly"`
+	Allow                             []jsonRule   `json:"allow"`
+	Ask                               []jsonRule   `json:"ask"`
+	Deny                              []jsonRule   `json:"deny"`
+	AdditionalDirectories             []jsonString `json:"additionalDirectories"`
+	DefaultMode                       jsonScalar   `json:"defaultMode"`
+	DisableBypassPermissionsMode      jsonScalar   `json:"disableBypassPermissionsMode"`
+	DisableAutoMode                   jsonScalar   `json:"disableAutoMode"`
+	SkipDangerousModePermissionPrompt jsonProvBool `json:"skipDangerousModePermissionPrompt"`
+	AllowManagedPermissionRulesOnly   bool         `json:"allowManagedPermissionRulesOnly"`
 }
 
 type jsonSandbox struct {
@@ -132,16 +156,53 @@ func toJSONSources(sources []ccsettings.SourceFile) []jsonScope {
 	return out
 }
 
+// toJSONSchemaCoverage classifies the on-disk top-level keys across all scopes
+// and folds in the claude --version string when it can be obtained.
+func toJSONSchemaCoverage(sources []ccsettings.SourceFile) jsonSchemaCoverage {
+	classified, counts := ccsettings.ClassifySources(sources)
+	keys := make([]jsonClassifiedKey, 0, len(classified))
+	for _, ck := range classified {
+		jk := jsonClassifiedKey{Key: ck.Key, Class: ck.Class.String()}
+		if ck.Schema != nil {
+			jk.Type = ck.Schema.Type
+			jk.Description = ck.Schema.Description
+			jk.Enum = ck.Schema.Enum
+		}
+		keys = append(keys, jk)
+	}
+	return jsonSchemaCoverage{
+		Counts:        counts,
+		ClaudeVersion: claudeVersion(),
+		Keys:          keys,
+	}
+}
+
+// claudeVersion returns the output of `claude --version`, trimmed, or "" when
+// the binary is not on PATH or the call fails. It is best-effort: the schema
+// coverage block omits the version rather than failing without it.
+func claudeVersion() string {
+	path, err := exec.LookPath("claude")
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command(path, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func toJSONPermissions(m *ccsettings.MergedSettings) jsonPermissions {
 	return jsonPermissions{
-		Allow:                           toJSONRules(m.Allow),
-		Ask:                             toJSONRules(m.Ask),
-		Deny:                            toJSONRules(m.Deny),
-		AdditionalDirectories:           toJSONStrings(m.AdditionalDirectories),
-		DefaultMode:                     toJSONScalar(m.DefaultMode),
-		DisableBypassPermissionsMode:    toJSONScalar(m.DisableBypassPermissionsMode),
-		DisableAutoMode:                 toJSONScalar(m.DisableAutoMode),
-		AllowManagedPermissionRulesOnly: m.AllowManagedPermissionRulesOnly,
+		Allow:                             toJSONRules(m.Allow),
+		Ask:                               toJSONRules(m.Ask),
+		Deny:                              toJSONRules(m.Deny),
+		AdditionalDirectories:             toJSONStrings(m.AdditionalDirectories),
+		DefaultMode:                       toJSONScalar(m.DefaultMode),
+		DisableBypassPermissionsMode:      toJSONScalar(m.DisableBypassPermissionsMode),
+		DisableAutoMode:                   toJSONScalar(m.DisableAutoMode),
+		SkipDangerousModePermissionPrompt: toJSONProvBool(m.SkipDangerousModePermissionPrompt),
+		AllowManagedPermissionRulesOnly:   m.AllowManagedPermissionRulesOnly,
 	}
 }
 
