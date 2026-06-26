@@ -15,6 +15,7 @@ func init() {
 	rootCmd.AddCommand(newRequestCmd())
 	rootCmd.AddCommand(newConfigCmd())
 	rootCmd.AddCommand(newSettingsCmd())
+	rootCmd.AddCommand(newSyncSettingsCmd())
 }
 
 func Execute() error {
