@@ -33,7 +33,7 @@ import (
 // which unions each member repo's [claude] block and seeds the result
 // additively (never clobbering user edits).
 func newSyncSettingsCmd() *cobra.Command {
-	var all, allWorkspaces, dryRun bool
+	var all, allWorkspaces, ecosystem, dryRun bool
 	var workspaceName string
 
 	cmd := &cobra.Command{
@@ -62,16 +62,18 @@ Example grove.toml configuration:
   allowedDomains = ["api.github.com"]
 
 By default every discovered workspace and worktree is targeted. Use
---workspace to limit to a single workspace (and its worktrees), and --dry-run
-to print the additions that WOULD be written without touching any file.`,
+--workspace to limit to a single workspace (and its worktrees), --ecosystem
+to limit to workspaces in the current ecosystem, and --dry-run to print the
+additions that WOULD be written without touching any file.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := logging.NewPrettyLogger()
-			return runSyncSettings(logger, all || allWorkspaces, workspaceName, dryRun)
+			return runSyncSettings(logger, all || allWorkspaces, ecosystem, workspaceName, dryRun)
 		},
 	}
 
 	cmd.Flags().BoolVar(&all, "all", false, "Sync settings for all workspaces and worktrees (default behavior).")
 	cmd.Flags().BoolVar(&allWorkspaces, "all-workspaces", false, "Alias for --all: sync settings for all registered workspaces.")
+	cmd.Flags().BoolVar(&ecosystem, "ecosystem", false, "Sync settings for all workspaces in the current ecosystem.")
 	cmd.Flags().StringVar(&workspaceName, "workspace", "", "Limit syncing to a single workspace (matched by name) and its worktrees.")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the additions that would be written without modifying any file.")
 
@@ -84,7 +86,7 @@ type syncTarget struct {
 	repos []string // member-repo subdir names (empty for single-repo worktrees)
 }
 
-func runSyncSettings(logger *logging.PrettyLogger, all bool, workspaceName string, dryRun bool) error {
+func runSyncSettings(logger *logging.PrettyLogger, all bool, ecosystem bool, workspaceName string, dryRun bool) error {
 	// Reconcile the XDG worktree registry first so enumeration sees freshly
 	// created worktrees (mirrors the daemon collector pattern).
 	if err := worktreeregistry.Reconcile(paths.WorktreesDir()); err != nil {
@@ -103,6 +105,28 @@ func runSyncSettings(logger *logging.PrettyLogger, all bool, workspaceName strin
 	// Build a provider so the notebook-dir resolver can use the in-memory index.
 	provider := workspace.NewProvider(result)
 
+	// For --ecosystem filtering, determine the current ecosystem path.
+	var currentEcoPath string
+	if ecosystem {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("could not get current directory: %w", err)
+		}
+		currentNode, err := workspace.GetProjectByPath(cwd)
+		if err != nil {
+			return fmt.Errorf("--ecosystem requires being in a workspace: %w", err)
+		}
+		currentEcoPath = currentNode.RootEcosystemPath
+		if currentEcoPath == "" {
+			// If current node IS the ecosystem root, use its path.
+			if currentNode.Kind == workspace.KindEcosystemRoot || currentNode.Kind == workspace.KindEcosystemWorktree {
+				currentEcoPath = currentNode.Path
+			} else {
+				return fmt.Errorf("current directory is not part of an ecosystem")
+			}
+		}
+	}
+
 	// Map worktree path -> member repos from the registry (authoritative for
 	// ecosystem worktrees, whose member set the filesystem layout alone can't
 	// encode).
@@ -118,7 +142,7 @@ func runSyncSettings(logger *logging.PrettyLogger, all bool, workspaceName strin
 		reposByPath[normalizePath(e.AbsPath)] = e.Repos
 	}
 
-	// Collect target worktrees from discovery, filtered by --workspace.
+	// Collect target worktrees from discovery, filtered by --workspace or --ecosystem.
 	seen := map[string]bool{}
 	var targets []syncTarget
 	addTarget := func(path string) {
@@ -137,6 +161,10 @@ func runSyncSettings(logger *logging.PrettyLogger, all bool, workspaceName strin
 		if workspaceName != "" && proj.Name != workspaceName {
 			continue
 		}
+		// Filter by ecosystem if --ecosystem was provided.
+		if currentEcoPath != "" && proj.ParentEcosystemPath != currentEcoPath && proj.Path != currentEcoPath {
+			continue
+		}
 		// The project root itself is a workspace (primary checkout).
 		addTarget(proj.Path)
 		for _, ws := range proj.Workspaces {
@@ -148,8 +176,8 @@ func runSyncSettings(logger *logging.PrettyLogger, all bool, workspaceName strin
 	}
 
 	// Also include any registry worktrees discovery did not surface (e.g.
-	// zombie / out-of-grove worktrees). Skip when limiting to one workspace.
-	if workspaceName == "" {
+	// zombie / out-of-grove worktrees). Skip when limiting to one workspace or ecosystem.
+	if workspaceName == "" && currentEcoPath == "" {
 		for _, e := range entries {
 			if e == nil || e.AbsPath == "" {
 				continue
