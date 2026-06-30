@@ -292,6 +292,7 @@ func reportDryRun(logger *logging.PrettyLogger, t syncTarget) error {
 		{[]string{"sandbox", "filesystem", "allowWrite"}, cfg.Sandbox.Filesystem.AllowWrite},
 		{[]string{"sandbox", "filesystem", "denyWrite"}, cfg.Sandbox.Filesystem.DenyWrite},
 		{[]string{"sandbox", "network", "allowedDomains"}, cfg.Sandbox.Network.AllowedDomains},
+		{[]string{"sandbox", "network", "allowUnixSockets"}, cfg.Sandbox.Network.AllowUnixSockets},
 	} {
 		present := existingStringSet(existing, a.path)
 		for _, v := range a.values {
@@ -308,6 +309,8 @@ func reportDryRun(logger *logging.PrettyLogger, t syncTarget) error {
 		{[]string{"sandbox", "enabled"}, cfg.Sandbox.Enabled},
 		{[]string{"sandbox", "failIfUnavailable"}, cfg.Sandbox.FailIfUnavailable},
 		{[]string{"sandbox", "autoAllowBashIfSandboxed"}, cfg.Sandbox.AutoAllowBashIfSandboxed},
+		{[]string{"sandbox", "network", "allowAllUnixSockets"}, cfg.Sandbox.Network.AllowAllUnixSockets},
+		{[]string{"sandbox", "network", "allowLocalBinding"}, cfg.Sandbox.Network.AllowLocalBinding},
 	} {
 		if b.val == nil {
 			continue

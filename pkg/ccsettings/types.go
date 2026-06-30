@@ -189,6 +189,9 @@ type SandboxNetwork struct {
 	AllowedDomains          []string `json:"allowedDomains,omitempty"`
 	DeniedDomains           []string `json:"deniedDomains,omitempty"`
 	AllowManagedDomainsOnly *bool    `json:"allowManagedDomainsOnly,omitempty"` // managed only
+	AllowUnixSockets        []string `json:"allowUnixSockets,omitempty"`
+	AllowAllUnixSockets     *bool    `json:"allowAllUnixSockets,omitempty"`
+	AllowLocalBinding       *bool    `json:"allowLocalBinding,omitempty"`
 	HTTPProxyPort           *int     `json:"httpProxyPort,omitempty"`
 	SOCKSProxyPort          *int     `json:"socksProxyPort,omitempty"`
 
