@@ -154,7 +154,9 @@ func runSyncSettings(logger *logging.PrettyLogger, all bool, ecosystem bool, wor
 			return
 		}
 		seen[key] = true
-		targets = append(targets, syncTarget{path: path, repos: reposByPath[key]})
+		repos := reposByPath[key]
+		targets = append(targets, syncTarget{path: path, repos: repos})
+		claudenotebook.Debugf("sync-settings target ADDED path=%s repos=%v", path, repos)
 	}
 
 	for _, proj := range result.Projects {
@@ -173,6 +175,43 @@ func runSyncSettings(logger *logging.PrettyLogger, all bool, ecosystem bool, wor
 			}
 			addTarget(ws.Path)
 		}
+	}
+
+	// The ecosystem ROOT / primary checkout (e.g. /Users/.../Code/grovetools) is
+	// itself a seedable target: an agent launched there reads its own
+	// .claude/settings.local.json. DiscoverAll surfaces it under result.Ecosystems
+	// — NOT result.Projects — so the loop above (which only walks Projects) never
+	// adds it, and it never had a registry entry either. Enumerate ecosystems
+	// explicitly, resolving each one's member repos from the sub-projects grouped
+	// beneath it so the root gets the SAME member union an XDG ecosystem worktree
+	// gets (member [claude] blocks + paired notebook dirs).
+	ecoReposByPath := map[string][]string{}
+	for _, proj := range result.Projects {
+		if proj.ParentEcosystemPath == "" || proj.Path == "" {
+			continue
+		}
+		ek := normalizePath(proj.ParentEcosystemPath)
+		ecoReposByPath[ek] = append(ecoReposByPath[ek], filepath.Base(proj.Path))
+	}
+	for _, eco := range result.Ecosystems {
+		if eco.Path == "" {
+			continue
+		}
+		if workspaceName != "" && eco.Name != workspaceName {
+			continue
+		}
+		if currentEcoPath != "" && eco.Path != currentEcoPath {
+			continue
+		}
+		key := normalizePath(eco.Path)
+		// Prefer a registry-provided member set if one exists (ecosystem worktrees
+		// can also appear here); otherwise fall back to the discovered subdirs.
+		if _, ok := reposByPath[key]; !ok {
+			reposByPath[key] = ecoReposByPath[key]
+		}
+		claudenotebook.Debugf("sync-settings ecosystem ROOT included: name=%s path=%s repos=%v",
+			eco.Name, eco.Path, reposByPath[key])
+		addTarget(eco.Path)
 	}
 
 	// Also include any registry worktrees discovery did not surface (e.g.
