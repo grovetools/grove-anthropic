@@ -233,7 +233,7 @@ func reportDryRun(logger *logging.PrettyLogger, t syncTarget) error {
 	cfg := resolveWorktreeClaudeConfig(t.path, t.repos)
 	settingsPath := filepath.Join(t.path, ".claude", "settings.local.json")
 
-	if cfg == nil || cfg.IsEmpty() {
+	if cfg == nil || !cfg.ShouldSeed() {
 		logger.InfoPretty(fmt.Sprintf("%s (dry-run): no [claude] profile resolved -> %s", t.path, settingsPath))
 		return nil
 	}
@@ -249,7 +249,9 @@ func reportDryRun(logger *logging.PrettyLogger, t syncTarget) error {
 		values []string
 	}{
 		{[]string{"permissions", "allow"}, cfg.Permissions.Allow},
+		{[]string{"permissions", "deny"}, cfg.Permissions.Deny},
 		{[]string{"sandbox", "filesystem", "allowWrite"}, cfg.Sandbox.Filesystem.AllowWrite},
+		{[]string{"sandbox", "filesystem", "denyWrite"}, cfg.Sandbox.Filesystem.DenyWrite},
 		{[]string{"sandbox", "network", "allowedDomains"}, cfg.Sandbox.Network.AllowedDomains},
 	} {
 		present := existingStringSet(existing, a.path)
@@ -312,7 +314,10 @@ func resolveWorktreeClaudeConfig(worktreePath string, repos []string) *claudenot
 		}
 		merged.Merge(&memberCfg)
 	}
-	if merged.IsEmpty() {
+	// Gate on ShouldSeed, not bare IsEmpty: a protectConfig-only (or
+	// allowGroveTools-only) profile is IsEmpty()==true yet still seeds, so
+	// returning nil here would make --dry-run wrongly report "no profile".
+	if !merged.ShouldSeed() {
 		return nil
 	}
 	return &merged
