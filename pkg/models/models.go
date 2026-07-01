@@ -21,7 +21,7 @@ const DefaultAlias = "claude-sonnet-4-6"
 // DefaultAgentAlias is the default model alias for claude agent jobs
 // (interactive/headless/isolated). Distinct from DefaultAlias, which is
 // the oneshot/chat planning default.
-const DefaultAgentAlias = "claude-opus-4-8"
+const DefaultAgentAlias = "claude-fable-5"
 
 // LongContextThreshold is the token count above which long context pricing applies.
 const LongContextThreshold int64 = 200_000
@@ -29,7 +29,17 @@ const LongContextThreshold int64 = 200_000
 // Models returns all available Anthropic Claude models.
 func Models() []Model {
 	return []Model{
-		// Claude 4.8 models (current)
+		// Claude 5 models (current)
+		{
+			ID:       "claude-fable-5",
+			Alias:    "claude-fable-5",
+			Provider: "Anthropic",
+			Note:     "Fable 5 - most capable Anthropic model for demanding reasoning and long-horizon agentic work",
+			Input:    10.00,
+			Output:   50.00,
+			Legacy:   false,
+		},
+		// Claude 4.8 models
 		{
 			ID:       "claude-opus-4-8",
 			Alias:    "claude-opus-4-8",
