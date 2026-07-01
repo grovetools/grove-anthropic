@@ -101,6 +101,72 @@ func TestSortCommands_AllowCandidatesFirst(t *testing.T) {
 	}
 }
 
+func TestOutcomeSeverity_SandboxDeniedRanking(t *testing.T) {
+	// A sandbox denial must sort above an ordinary error but below a hard block.
+	if !(outcomeSeverity(outcomeBlocked) > outcomeSeverity(outcomeSandboxDenied)) {
+		t.Errorf("blocked (%d) should outrank sandbox_denied (%d)",
+			outcomeSeverity(outcomeBlocked), outcomeSeverity(outcomeSandboxDenied))
+	}
+	if !(outcomeSeverity(outcomeSandboxDenied) > outcomeSeverity(outcomeRanError)) {
+		t.Errorf("sandbox_denied (%d) should outrank ran_error (%d)",
+			outcomeSeverity(outcomeSandboxDenied), outcomeSeverity(outcomeRanError))
+	}
+}
+
+func TestDedupCommands_SandboxDeniedWinsOverRanOK(t *testing.T) {
+	// A command that sometimes ran ok but was once sandbox-denied must surface as
+	// sandbox_denied so the denial stays visible as a review candidate.
+	in := []command{
+		{Command: "touch out/x", Outcome: outcomeRanOK, Runs: 1, LastSeen: "t1"},
+		{Command: "touch out/x", Outcome: outcomeSandboxDenied, Runs: 1, LastSeen: "t2"},
+		{Command: "touch out/x", Outcome: outcomeRanOK, Runs: 1, LastSeen: "t3"},
+	}
+	out := dedupCommands(in)
+	c, ok := findCommand(out, "touch out/x")
+	if !ok {
+		t.Fatal("touch out/x not found after dedup")
+	}
+	if c.Outcome != outcomeSandboxDenied {
+		t.Errorf("Outcome = %q, want sandbox_denied (worst severity)", c.Outcome)
+	}
+	if c.Runs != 3 {
+		t.Errorf("Runs = %d, want 3", c.Runs)
+	}
+}
+
+func TestSortCommands_SandboxDeniedAboveError(t *testing.T) {
+	// Same verdict, so the outcome-severity tiebreak decides: a sandbox denial
+	// must sort ahead of a plain error and behind a blocked attempt.
+	cmds := []command{
+		{Command: "plainerr", Verdict: ccsettings.ResultPrompt, Outcome: outcomeRanError, LastSeen: "t1"},
+		{Command: "blocked", Verdict: ccsettings.ResultPrompt, Outcome: outcomeBlocked, LastSeen: "t1"},
+		{Command: "sandbox", Verdict: ccsettings.ResultPrompt, Outcome: outcomeSandboxDenied, LastSeen: "t1"},
+	}
+	sortCommands(cmds)
+	order := []string{cmds[0].Command, cmds[1].Command, cmds[2].Command}
+	want := []string{"blocked", "sandbox", "plainerr"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("sorted order = %v, want %v", order, want)
+			break
+		}
+	}
+}
+
+func TestOutcomeBadge_SandboxDeniedRendersDistinctly(t *testing.T) {
+	sandbox := outcomeBadge(outcomeSandboxDenied)
+	if sandbox == "" {
+		t.Fatal("sandbox badge rendered empty")
+	}
+	// It must not collapse to the generic error or blocked badge.
+	if sandbox == outcomeBadge(outcomeRanError) {
+		t.Error("sandbox badge must differ from the error badge")
+	}
+	if sandbox == outcomeBadge(outcomeBlocked) {
+		t.Error("sandbox badge must differ from the blocked badge")
+	}
+}
+
 func TestLoadCommands_EndToEnd(t *testing.T) {
 	// Build an engine that allows `ls *` but not `npm test`, so verdicts differ.
 	d := buildData(t, map[string]string{

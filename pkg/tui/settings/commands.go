@@ -40,10 +40,11 @@ type commandRow struct {
 // Outcome constants mirror the recorder's vocabulary so the viewer can derive
 // the "blocked" state (a pre row with no matching post row).
 const (
-	outcomePending  = "pending"
-	outcomeRanOK    = "ran_ok"
-	outcomeRanError = "ran_error"
-	outcomeBlocked  = "blocked"
+	outcomePending       = "pending"
+	outcomeRanOK         = "ran_ok"
+	outcomeRanError      = "ran_error"
+	outcomeSandboxDenied = "sandbox_denied" // hooks recorder: sandbox blocked a filesystem write
+	outcomeBlocked       = "blocked"
 )
 
 // command is one collapsed logical command: the pre and post rows sharing a
@@ -52,7 +53,7 @@ const (
 type command struct {
 	Command  string
 	Cwd      string
-	Outcome  string // ran_ok | ran_error | blocked | pending
+	Outcome  string // ran_ok | ran_error | sandbox_denied | blocked | pending
 	Runs     int    // identical-command occurrences folded in (>= 1)
 	Verdict  ccsettings.DecisionResult
 	Matched  string // matched rule string ("" when none)
@@ -220,6 +221,10 @@ func dedupCommands(in []command) []command {
 func outcomeSeverity(o string) int {
 	switch o {
 	case outcomeBlocked:
+		return 4
+	case outcomeSandboxDenied:
+		// A sandbox denial outranks an ordinary error: it is a hard policy block
+		// the human likely wants to review (widen allowWrite / excludedCommands).
 		return 3
 	case outcomeRanError:
 		return 2

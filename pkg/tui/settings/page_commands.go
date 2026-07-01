@@ -101,9 +101,11 @@ func (p *commandsPage) rebuild() {
 }
 
 // jobPayload / commandPayload / rungPayload mark selectable leaves per mode.
-type jobPayload struct{ job jobArtifacts }
-type commandPayload struct{ cmd command }
-type rungPayload struct{ rung ccsettings.RuleRung }
+type (
+	jobPayload     struct{ job jobArtifacts }
+	commandPayload struct{ cmd command }
+	rungPayload    struct{ rung ccsettings.RuleRung }
+)
 
 func (p *commandsPage) buildJobs() []*node {
 	th := theme.DefaultTheme
@@ -352,6 +354,10 @@ func outcomeBadge(outcome string) string {
 	switch outcome {
 	case outcomeBlocked:
 		return badge("blocked", th.Error)
+	case outcomeSandboxDenied:
+		// Distinct from a generic error: a sandbox policy block, not a command
+		// failure. Magenta reads as a special status, separate from red/yellow.
+		return badge("sandbox", th.Magenta)
 	case outcomeRanError:
 		return badge("error", th.Warning)
 	case outcomePending:
