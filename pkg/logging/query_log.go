@@ -92,89 +92,31 @@ func (ql *QueryLogger) Log(entry QueryLog) error {
 }
 
 // modelPrices resolves the per-million-token input and output prices for a
-// model. Pricing as of Jan 2026 - see
+// model, plus a knownPricing flag (false when the price came from the default
+// fallback rather than the model table). Pricing as of Jan 2026 - see
 // https://platform.claude.com/docs/en/about-claude/pricing. inputTokens is used
 // only to decide whether Sonnet long-context pricing applies.
-func modelPrices(model string, inputTokens int64) (inputPrice, outputPrice float64) {
-	// Resolve alias first
-	model = models.ResolveAlias(model)
+//
+// Base rates come from a single source of truth, models.GetPricingOK (exact →
+// family-substring → 3/15 fallback), so this function no longer duplicates the
+// per-model price literals — the old hand-maintained cascade had already
+// drifted (e.g. claude-fable-5 was missing and under-billed ~3.3x as Sonnet).
+// The Sonnet long-context tier is the only pricing rule that lives here, since
+// it depends on the request's input-token count.
+func modelPrices(model string, inputTokens int64) (inputPrice, outputPrice float64, knownPricing bool) {
+	inputPrice, outputPrice, knownPricing = models.GetPricingOK(model)
 
-	// Check if this is a Sonnet model eligible for long context pricing
-	isSonnet := strings.Contains(model, "sonnet-4-6") || strings.Contains(model, "sonnet-4.6") ||
-		strings.Contains(model, "sonnet-4-5") || strings.Contains(model, "sonnet-4.5") ||
-		strings.Contains(model, "sonnet-4") || strings.Contains(model, "sonnet")
-	useLongContextPricing := isSonnet && inputTokens > models.LongContextThreshold
-
-	switch {
-	// Claude 4.8 models (current)
-	case strings.Contains(model, "opus-4-8") || strings.Contains(model, "opus-4.8"):
-		inputPrice = 5.00
-		outputPrice = 25.00
-	// Claude 4.6 models
-	case strings.Contains(model, "opus-4-6") || strings.Contains(model, "opus-4.6"):
-		inputPrice = 5.00
-		outputPrice = 25.00
-	case strings.Contains(model, "sonnet-4-6") || strings.Contains(model, "sonnet-4.6"):
-		inputPrice = 3.00
-		outputPrice = 15.00
-
-	// Claude 4.5 models
-	case strings.Contains(model, "opus-4-5") || strings.Contains(model, "opus-4.5"):
-		inputPrice = 5.00
-		outputPrice = 25.00
-	case strings.Contains(model, "sonnet-4-5") || strings.Contains(model, "sonnet-4.5"):
-		if useLongContextPricing {
-			inputPrice = 6.00
-			outputPrice = 22.50
-		} else {
-			inputPrice = 3.00
-			outputPrice = 15.00
-		}
-	case strings.Contains(model, "haiku-4-5") || strings.Contains(model, "haiku-4.5"):
-		inputPrice = 1.00
-		outputPrice = 5.00
-
-	// Claude 4.x legacy models
-	case strings.Contains(model, "opus-4-1") || strings.Contains(model, "opus-4.1"):
-		inputPrice = 15.00
-		outputPrice = 75.00
-	case strings.Contains(model, "opus-4"):
-		inputPrice = 15.00
-		outputPrice = 75.00
-	case strings.Contains(model, "sonnet-4") || strings.Contains(model, "sonnet-3-7") || strings.Contains(model, "sonnet-3.7"):
-		if useLongContextPricing {
-			inputPrice = 6.00
-			outputPrice = 22.50
-		} else {
-			inputPrice = 3.00
-			outputPrice = 15.00
-		}
-
-	// Claude 3.x legacy models
-	case strings.Contains(model, "haiku-3-5") || strings.Contains(model, "haiku-3.5"):
-		inputPrice = 0.80
-		outputPrice = 4.00
-	case strings.Contains(model, "haiku-3") || strings.Contains(model, "haiku"):
-		inputPrice = 0.25
-		outputPrice = 1.25
-	case strings.Contains(model, "opus-3") || strings.Contains(model, "opus"):
-		inputPrice = 15.00
-		outputPrice = 75.00
-	case strings.Contains(model, "sonnet"):
-		if useLongContextPricing {
-			inputPrice = 6.00
-			outputPrice = 22.50
-		} else {
-			inputPrice = 3.00
-			outputPrice = 15.00
-		}
-
-	default: // Default to Sonnet 4.5 pricing as a safe middle-ground
-		inputPrice = 3.00
-		outputPrice = 15.00
+	// Sole remaining special case: Sonnet long-context pricing (Sonnet ≥3.7
+	// bills input at 6.00 / output at 22.50 above LongContextThreshold input
+	// tokens). Applied on top of the table base rate so it survives both the
+	// exact and family-substring lookups for any dated Sonnet snapshot.
+	resolved := models.ResolveAlias(model)
+	if strings.Contains(resolved, "sonnet") && inputTokens > models.LongContextThreshold {
+		inputPrice = 6.00
+		outputPrice = 22.50
 	}
 
-	return inputPrice, outputPrice
+	return inputPrice, outputPrice, knownPricing
 }
 
 // EstimateCost calculates the estimated cost for a given model and token counts.
@@ -183,16 +125,30 @@ func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
 }
 
 // EstimateCostWithCache calculates the estimated cost including Anthropic prompt
-// caching. Anthropic bills cache-write tokens at 1.25x the input price and
-// cache-read tokens at 0.10x the input price; regular InputTokens already
-// exclude cached tokens, so the three input tiers sum without double-counting.
+// caching. See EstimateCostWithCacheOK for the pricing details; this wrapper
+// discards the known-pricing flag for callers that only need the cost.
 func EstimateCostWithCache(model string, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64) float64 {
-	inputPrice, outputPrice := modelPrices(model, inputTokens)
+	cost, _ := EstimateCostWithCacheOK(model, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens)
+	return cost
+}
+
+// EstimateCostWithCacheOK calculates the estimated cost including Anthropic
+// prompt caching and reports whether the model's price was found in the model
+// table (knownPricing=false means the 3/15 default was used, so the cost is a
+// rough estimate). Anthropic bills cache-write tokens at 1.25x the input price
+// and cache-read tokens at 0.10x the input price; regular InputTokens already
+// exclude cached tokens, so the three input tiers sum without double-counting.
+//
+// The 1.25x/0.10x multipliers are for 5m ephemeral caching, the only cache mode
+// grove's callers currently set. 1h caching carries a different (2x write)
+// premium and would need revisiting here if adopted.
+func EstimateCostWithCacheOK(model string, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64) (cost float64, knownPricing bool) {
+	inputPrice, outputPrice, known := modelPrices(model, inputTokens)
 
 	inputCost := (float64(inputTokens) / 1_000_000) * inputPrice
 	cacheCreationCost := (float64(cacheCreationTokens) / 1_000_000) * inputPrice * 1.25
 	cacheReadCost := (float64(cacheReadTokens) / 1_000_000) * inputPrice * 0.10
 	outputCost := (float64(outputTokens) / 1_000_000) * outputPrice
 
-	return inputCost + cacheCreationCost + cacheReadCost + outputCost
+	return inputCost + cacheCreationCost + cacheReadCost + outputCost, known
 }

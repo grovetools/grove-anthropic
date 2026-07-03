@@ -66,12 +66,40 @@ func NewRequestRunner() *RequestRunner {
 	}
 }
 
-// Run executes a request with the given options
+// UsageResult carries the token counts and estimated cost of a single request,
+// surfaced to in-process callers (e.g. grove-flow) that need to record per-job
+// usage without reading back the query-log ledger. Token counts are exact from
+// the API response; EstimatedCostUSD is derived from the model price table and
+// KnownPricing reports whether that model was actually in the table (false ⇒
+// the cost used the default fallback rate and is only a rough estimate).
+type UsageResult struct {
+	Model               string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+	EstimatedCostUSD    float64
+	KnownPricing        bool
+}
+
+// Run executes a request with the given options. It is a thin wrapper around
+// RunWithUsage that discards the usage result, preserving the historical
+// (string, error) signature for callers that don't need token accounting.
 func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string, error) {
+	response, _, err := r.RunWithUsage(ctx, options)
+	return response, err
+}
+
+// RunWithUsage executes a request and additionally returns the token/cost usage
+// for the call. On success the *UsageResult is always non-nil. On error it is
+// non-nil only when the API returned usage alongside the error (e.g. the
+// "no text content in response" path) — callers may inspect it or ignore it;
+// grove-flow ignores usage on error and lets the query-log ledger capture it.
+func (r *RequestRunner) RunWithUsage(ctx context.Context, options RequestOptions) (string, *UsageResult, error) {
 	startTime := time.Now()
 
 	if options.Prompt == "" {
-		return "", fmt.Errorf("prompt cannot be empty")
+		return "", nil, fmt.Errorf("prompt cannot be empty")
 	}
 
 	workDir := options.WorkDir
@@ -79,13 +107,13 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 		var err error
 		workDir, err = os.Getwd()
 		if err != nil {
-			return "", fmt.Errorf("getting current directory: %w", err)
+			return "", nil, fmt.Errorf("getting current directory: %w", err)
 		}
 	}
 
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
-		return "", fmt.Errorf("resolving work directory: %w", err)
+		return "", nil, fmt.Errorf("resolving work directory: %w", err)
 	}
 	workDir = absWorkDir
 	r.logger.WorkingDirectoryCtx(ctx, workDir)
@@ -118,10 +146,10 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 		r.logger.Blank()
 		r.logger.Progress(theme.IconSync + " Regenerating context from rules...")
 		if err := ctxMgr.UpdateFromRules(); err != nil {
-			return "", fmt.Errorf("updating context from rules: %w", err)
+			return "", nil, fmt.Errorf("updating context from rules: %w", err)
 		}
 		if err := ctxMgr.GenerateContext(false); err != nil {
-			return "", fmt.Errorf("generating context: %w", err)
+			return "", nil, fmt.Errorf("generating context: %w", err)
 		}
 		r.logger.Blank()
 	}
@@ -174,7 +202,7 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 
 	anthropicClient, err := NewClient(options.APIKey)
 	if err != nil {
-		return "", fmt.Errorf("creating Anthropic client: %w", err)
+		return "", nil, fmt.Errorf("creating Anthropic client: %w", err)
 	}
 
 	r.logger.ModelCtx(ctx, options.Model)
@@ -195,16 +223,29 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 	responseTime := time.Since(startTime)
 	var inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64
 	var estimatedCost float64
+	var knownPricing bool
+	var usageResult *UsageResult
 	if usage != nil {
 		inputTokens = usage.InputTokens
 		outputTokens = usage.OutputTokens
 		cacheCreationTokens = usage.CacheCreationInputTokens
 		cacheReadTokens = usage.CacheReadInputTokens
-		estimatedCost = logging.EstimateCostWithCache(options.Model, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens)
+		estimatedCost, knownPricing = logging.EstimateCostWithCacheOK(options.Model, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens)
+		usageResult = &UsageResult{
+			Model:               options.Model,
+			InputTokens:         inputTokens,
+			OutputTokens:        outputTokens,
+			CacheCreationTokens: cacheCreationTokens,
+			CacheReadTokens:     cacheReadTokens,
+			EstimatedCostUSD:    estimatedCost,
+			KnownPricing:        knownPricing,
+		}
 	}
 
 	if err != nil {
-		return "", fmt.Errorf("Anthropic API request failed: %w", err)
+		// usageResult is returned (may be non-nil on the error-with-usage path)
+		// so callers can account for it if they choose; grove-flow does not.
+		return "", usageResult, fmt.Errorf("Anthropic API request failed: %w", err)
 	}
 
 	// Display token usage
@@ -212,5 +253,5 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 		r.logger.TokenUsageCtx(ctx, int(inputTokens), int(outputTokens), int(cacheCreationTokens), int(cacheReadTokens), responseTime, estimatedCost)
 	}
 
-	return response, nil
+	return response, usageResult, nil
 }

@@ -1,6 +1,8 @@
 // Package models provides centralized model definitions for Anthropic Claude models.
 package models
 
+import "strings"
+
 // Model represents an LLM model with its metadata.
 type Model struct {
 	ID       string  // Full API model ID (e.g., "claude-sonnet-4-5-20250929")
@@ -168,16 +170,54 @@ func CurrentModels() []Model {
 }
 
 // GetPricing returns input and output price per million tokens for a model.
-// Returns default Sonnet 4.5 pricing if model not found.
+// Returns default Sonnet pricing if the model is not found. Prefer
+// GetPricingOK when the caller needs to distinguish a table hit from the
+// fallback (e.g. to flag a cost as estimated/unpriced).
 func GetPricing(model string) (input, output float64) {
-	// Resolve alias first
-	model = ResolveAlias(model)
+	input, output, _ = GetPricingOK(model)
+	return input, output
+}
 
+// GetPricingOK returns input and output price per million tokens for a model
+// plus an ok flag reporting whether the price came from the model table (true)
+// or the 3/15 default fallback (false). Lookup is three-tier:
+//
+//  1. Exact: resolve the alias, then match a table entry's full ID. This is
+//     the authoritative path for every currently-known model.
+//  2. Family substring: match when the (alias-resolved) model string contains a
+//     table entry's alias, longest alias winning. This keeps pricing resilient
+//     to newer dated snapshots not yet in the table — e.g. a hypothetical
+//     "claude-sonnet-4-6-20260901" still prices as the "claude-sonnet-4-6"
+//     family rather than silently falling to the default. Longest-alias-wins
+//     ensures "...-sonnet-4-6-..." binds to "claude-sonnet-4-6", not the
+//     shorter "claude-sonnet-4".
+//  3. Fallback: Sonnet 3/15 as a safe middle-ground, ok=false.
+func GetPricingOK(model string) (input, output float64, ok bool) {
+	resolved := ResolveAlias(model)
+
+	// Tier 1: exact full-ID match.
 	for _, m := range Models() {
-		if m.ID == model {
-			return m.Input, m.Output
+		if m.ID == resolved {
+			return m.Input, m.Output, true
 		}
 	}
-	// Default to Sonnet 4.5 pricing
-	return 3.00, 15.00
+
+	// Tier 2: family substring, longest matching alias wins.
+	bestLen := 0
+	for _, m := range Models() {
+		if m.Alias == "" {
+			continue
+		}
+		if strings.Contains(resolved, m.Alias) && len(m.Alias) > bestLen {
+			bestLen = len(m.Alias)
+			input, output = m.Input, m.Output
+			ok = true
+		}
+	}
+	if ok {
+		return input, output, true
+	}
+
+	// Tier 3: default fallback.
+	return 3.00, 15.00, false
 }
