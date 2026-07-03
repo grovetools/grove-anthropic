@@ -46,18 +46,45 @@ func NewClient(apiKeyOverride string) (*Client, error) {
 	return &Client{client: sdkClient}, nil
 }
 
+// cacheBreakpointIndices returns the set of contextFiles indices that should
+// carry an Anthropic cache_control breakpoint, given the stable/pinned/volatile
+// partition. contextFiles are ordered [stable…][pinned…][volatile…]. Up to three
+// breakpoints are placed (the API allows four): a fixed one on the last stable
+// document (stableCount-1), a fixed one on the last pinned document
+// (stableCount+pinnedCount-1), and a moving one on the last document overall
+// (total-1). When noCache is set no breakpoints are placed, preserving NoCache
+// semantics for free. With pinnedCount == 0 the result is exactly the
+// pre-pinned two-breakpoint set {stableCount-1, total-1}, so chats with no
+// pinned context produce byte-identical requests to before this change.
+func cacheBreakpointIndices(total, stableCount, pinnedCount int, noCache bool) map[int]bool {
+	bps := make(map[int]bool)
+	if noCache || total == 0 {
+		return bps
+	}
+	if stableCount > 0 {
+		bps[stableCount-1] = true
+	}
+	if pinnedCount > 0 {
+		bps[stableCount+pinnedCount-1] = true
+	}
+	bps[total-1] = true
+	return bps
+}
+
 // GenerateContent sends a request to the Anthropic API with context files.
 // stableCount is the number of leading contextFiles that form the stable,
-// cacheable prefix; an Anthropic cache_control breakpoint is placed on the last
-// of them unless noCache is set.
-func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64, stableCount int, noCache bool) (string, *anthropic.BetaUsage, error) {
+// cacheable prefix; pinnedCount is the number of documents immediately after the
+// stable prefix that form a second, stable-appended cacheable region (see
+// cacheBreakpointIndices). Anthropic cache_control breakpoints are placed on the
+// last stable, last pinned, and last document overall unless noCache is set.
+func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64, stableCount, pinnedCount int, noCache bool) (string, *anthropic.BetaUsage, error) {
 	startTime := time.Now()
 	requestID := os.Getenv("GROVE_REQUEST_ID")
 	contextInfo := grovecontext.GetContextInfo("")
 	caller := grovecontext.GetCaller()
 
 	// Execute the actual API call
-	responseText, usage, err := c.generateContentInternal(ctx, model, prompt, systemPrompt, contextFiles, maxTokens, stableCount, noCache)
+	responseText, usage, err := c.generateContentInternal(ctx, model, prompt, systemPrompt, contextFiles, maxTokens, stableCount, pinnedCount, noCache)
 
 	// Log the request (success or failure)
 	logEntry := logging.QueryLog{
@@ -97,18 +124,22 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 
 // generateContentInternal contains the core API call logic.
 // Uses streaming internally to support longer requests (>10 min) with high max_tokens.
-func (c *Client) generateContentInternal(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64, stableCount int, noCache bool) (string, *anthropic.BetaUsage, error) {
+func (c *Client) generateContentInternal(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64, stableCount, pinnedCount int, noCache bool) (string, *anthropic.BetaUsage, error) {
 	contentBlocks := make([]anthropic.BetaContentBlockParamUnion, 0, 1+len(contextFiles))
 
 	// Upload context files and add them as document blocks FIRST, so that the
-	// stable context forms a cacheable prefix. Files are ordered stable-first by
-	// the caller (see request.go). Up to two cache_control breakpoints (the API
-	// allows four): one on the last stable document (index stableCount-1), and
-	// one on the last document overall. The second makes caching work even when
-	// no stable/cold context exists — all documents precede the per-turn prompt
-	// text, so they form a stable prefix across turns of a chat regardless of
-	// how the rules file splits hot/cold. When a volatile document changes, the
-	// stable breakpoint still yields a partial cache hit.
+	// stable context forms a cacheable prefix. Files are ordered
+	// stable-then-pinned-then-volatile by the caller (see request.go). Up to
+	// three cache_control breakpoints (the API allows four), computed by
+	// cacheBreakpointIndices: a fixed one on the last stable document, a fixed
+	// one on the last pinned document (the stable-appended region added
+	// mid-chat), and a moving one on the last document overall. The last-doc
+	// breakpoint makes caching work even when no stable/cold context exists — all
+	// documents precede the per-turn prompt text, so they form a stable prefix
+	// across turns of a chat regardless of how the rules file splits hot/cold.
+	// When a volatile document changes, the stable/pinned breakpoints still yield
+	// a partial cache hit.
+	breakpoints := cacheBreakpointIndices(len(contextFiles), stableCount, pinnedCount, noCache)
 	for i, filePath := range contextFiles {
 		metadata, err := uploadFile(ctx, &c.client, filePath)
 		if err != nil {
@@ -118,9 +149,7 @@ func (c *Client) generateContentInternal(ctx context.Context, model, prompt, sys
 		blk := anthropic.NewBetaDocumentBlock(anthropic.BetaFileDocumentSourceParam{
 			FileID: metadata.ID,
 		})
-		isLastStable := stableCount > 0 && i == stableCount-1
-		isLastDoc := i == len(contextFiles)-1
-		if !noCache && (isLastStable || isLastDoc) {
+		if breakpoints[i] {
 			blk.OfDocument.CacheControl = anthropic.NewBetaCacheControlEphemeralParam()
 		}
 		contentBlocks = append(contentBlocks, blk)

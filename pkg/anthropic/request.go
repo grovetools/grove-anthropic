@@ -25,6 +25,15 @@ type RequestOptions struct {
 	MaxTokens     int64
 	NoCache       bool   // Disable Anthropic prompt caching for this request
 	APIKey        string // Explicitly pass API key to avoid context issues
+	// PinnedFiles are files placed in a stable, cacheable region *after* the
+	// cold/CLAUDE.md stable half and *before* the volatile hot half, each in the
+	// caller's declared order (do NOT sort). They get their own fixed
+	// cache_control breakpoint (see client.go cacheBreakpointIndices), so context
+	// added mid-chat preserves the already-cached stable prefix on the turn it is
+	// introduced and caches durably on every subsequent turn. grove-flow sets
+	// this from a chat job's `pinned_context` frontmatter. Empty ⇒ requests are
+	// byte-identical to the pre-pinned two-breakpoint behavior.
+	PinnedFiles []string
 	// HotContextFile / ColdContextFile pin the generated/cached context to
 	// explicit absolute paths instead of resolving them from WorkDir. grove-
 	// flow sets these to per-job paths (under <plan>/.artifacts/<job-id>/) so
@@ -155,12 +164,16 @@ func (r *RequestRunner) RunWithUsage(ctx context.Context, options RequestOptions
 	}
 
 	// Collect context files, deduplicating by absolute path. Files are split
-	// into a STABLE half (cold/cached context + CLAUDE.md) and a VOLATILE half
-	// (hot context + caller-supplied --context files). The stable half is
-	// emitted first so it forms a cacheable prefix; the Anthropic cache_control
-	// breakpoint is placed on the last stable document (see client.go).
+	// into a STABLE half (cold/cached context + CLAUDE.md), a PINNED region
+	// (caller-supplied stable-appended files), and a VOLATILE half (hot context +
+	// caller-supplied --context files). They are emitted stable→pinned→volatile
+	// so the stable+pinned prefix is cacheable; Anthropic cache_control
+	// breakpoints are placed on the last stable, last pinned, and last document
+	// (see client.go). Dedupe precedence is stable > pinned > volatile: a path
+	// present in more than one channel stays in the earliest (most stable) one,
+	// which is the safe direction (it was already before the later breakpoint).
 	seen := make(map[string]bool)
-	var stableFiles, volatileFiles []string
+	var stableFiles, pinnedFiles, volatileFiles []string
 	addFile := func(dst *[]string, path string) {
 		absPath, err := filepath.Abs(path)
 		if err != nil {
@@ -185,6 +198,12 @@ func (r *RequestRunner) RunWithUsage(ctx context.Context, options RequestOptions
 		r.logger.Info(fmt.Sprintf("Including CLAUDE.md: %s", claudePath))
 	}
 
+	// Pinned region: caller-supplied stable-appended files, in declared order
+	// (do NOT sort — position stability across turns is what keeps them cached).
+	for _, f := range options.PinnedFiles {
+		addFile(&pinnedFiles, f)
+	}
+
 	// Volatile half: hot context, then caller-supplied context files.
 	if _, err := os.Stat(hotContextFile); err == nil {
 		addFile(&volatileFiles, hotContextFile)
@@ -194,7 +213,8 @@ func (r *RequestRunner) RunWithUsage(ctx context.Context, options RequestOptions
 	}
 
 	stableCount := len(stableFiles)
-	allContextFiles := append(append([]string{}, stableFiles...), volatileFiles...)
+	pinnedCount := len(pinnedFiles)
+	allContextFiles := append(append(append([]string{}, stableFiles...), pinnedFiles...), volatileFiles...)
 
 	if len(allContextFiles) > 0 {
 		r.logger.FilesIncludedCtx(ctx, allContextFiles)
@@ -216,6 +236,7 @@ func (r *RequestRunner) RunWithUsage(ctx context.Context, options RequestOptions
 		allContextFiles,
 		options.MaxTokens,
 		stableCount,
+		pinnedCount,
 		options.NoCache,
 	)
 
