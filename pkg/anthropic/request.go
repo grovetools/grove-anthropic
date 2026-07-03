@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/grovetools/core/tui/theme"
@@ -37,6 +38,20 @@ type RequestOptions struct {
 	Caller   string
 	JobID    string
 	PlanName string
+}
+
+// isEmptyColdContext reports whether path is a cx-generated cached-context
+// file with zero cold files (cx emits `<cold-context files="0">` when the
+// rules have no `---` cold section).
+func isEmptyColdContext(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	return strings.Contains(string(buf[:n]), `<cold-context files="0"`)
 }
 
 // RequestRunner handles the orchestration of Anthropic API requests with context management
@@ -129,8 +144,11 @@ func (r *RequestRunner) Run(ctx context.Context, options RequestOptions) (string
 		}
 	}
 
-	// Stable half: cold/cached context, then CLAUDE.md.
-	if _, err := os.Stat(coldContextFile); err == nil {
+	// Stable half: cold/cached context, then CLAUDE.md. cx always writes a
+	// cached-context file, even when the rules have no cold section — skip the
+	// empty stub so we don't upload it or waste a cache breakpoint on a
+	// document far below the cacheable minimum.
+	if _, err := os.Stat(coldContextFile); err == nil && !isEmptyColdContext(coldContextFile) {
 		addFile(&stableFiles, coldContextFile)
 	}
 	claudePath := filepath.Join(workDir, "CLAUDE.md")

@@ -102,9 +102,13 @@ func (c *Client) generateContentInternal(ctx context.Context, model, prompt, sys
 
 	// Upload context files and add them as document blocks FIRST, so that the
 	// stable context forms a cacheable prefix. Files are ordered stable-first by
-	// the caller (see request.go); place a single cache_control breakpoint on
-	// the last stable document (index stableCount-1) so that everything up to
-	// and including it (system prompt + stable docs) is cached.
+	// the caller (see request.go). Up to two cache_control breakpoints (the API
+	// allows four): one on the last stable document (index stableCount-1), and
+	// one on the last document overall. The second makes caching work even when
+	// no stable/cold context exists — all documents precede the per-turn prompt
+	// text, so they form a stable prefix across turns of a chat regardless of
+	// how the rules file splits hot/cold. When a volatile document changes, the
+	// stable breakpoint still yields a partial cache hit.
 	for i, filePath := range contextFiles {
 		metadata, err := uploadFile(ctx, &c.client, filePath)
 		if err != nil {
@@ -114,7 +118,9 @@ func (c *Client) generateContentInternal(ctx context.Context, model, prompt, sys
 		blk := anthropic.NewBetaDocumentBlock(anthropic.BetaFileDocumentSourceParam{
 			FileID: metadata.ID,
 		})
-		if !noCache && stableCount > 0 && i == stableCount-1 {
+		isLastStable := stableCount > 0 && i == stableCount-1
+		isLastDoc := i == len(contextFiles)-1
+		if !noCache && (isLastStable || isLastDoc) {
 			blk.OfDocument.CacheControl = anthropic.NewBetaCacheControlEphemeralParam()
 		}
 		contentBlocks = append(contentBlocks, blk)
