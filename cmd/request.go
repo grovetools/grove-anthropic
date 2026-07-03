@@ -24,6 +24,7 @@ var (
 	requestContextFiles []string
 	requestRegenerate   bool
 	requestMaxTokens    int64
+	requestNoCache      bool
 )
 
 func newRequestCmd() *cobra.Command {
@@ -43,6 +44,7 @@ func newRequestCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&requestContextFiles, "context", nil, "Additional context files to include")
 	cmd.Flags().BoolVar(&requestRegenerate, "regenerate", false, "Regenerate context before request")
 	cmd.Flags().Int64Var(&requestMaxTokens, "max-tokens", 8192, "Maximum tokens in response")
+	cmd.Flags().BoolVar(&requestNoCache, "no-cache", false, "Disable Anthropic prompt caching")
 
 	return cmd
 }
@@ -75,6 +77,7 @@ func runRequest(cmd *cobra.Command, args []string) error {
 		ContextFiles:  requestContextFiles,
 		RegenerateCtx: requestRegenerate,
 		MaxTokens:     requestMaxTokens,
+		NoCache:       requestNoCache,
 	}
 
 	runner := anthropic.NewRequestRunner()

@@ -22,11 +22,14 @@ type Logger struct {
 
 // TokenFields represents token usage metrics with verbosity levels
 type TokenFields struct {
-	InputTokens      int     `json:"input_tokens" verbosity:"0"`
-	OutputTokens     int     `json:"output_tokens" verbosity:"0"`
-	TotalTokens      int     `json:"total_tokens" verbosity:"0"`
-	ResponseTimeMs   int64   `json:"response_time_ms" verbosity:"0"`
-	EstimatedCostUSD float64 `json:"estimated_cost_usd" verbosity:"0"`
+	InputTokens         int     `json:"input_tokens" verbosity:"0"`
+	OutputTokens        int     `json:"output_tokens" verbosity:"0"`
+	TotalTokens         int     `json:"total_tokens" verbosity:"0"`
+	CacheWriteTokens    int     `json:"cache_write_tokens" verbosity:"0"`
+	CacheReadTokens     int     `json:"cache_read_tokens" verbosity:"0"`
+	CacheHitRatePercent float64 `json:"cache_hit_rate_percent" verbosity:"0"`
+	ResponseTimeMs      int64   `json:"response_time_ms" verbosity:"0"`
+	EstimatedCostUSD    float64 `json:"estimated_cost_usd" verbosity:"0"`
 }
 
 // ModelFields represents model information with verbosity level
@@ -183,8 +186,15 @@ func (l *Logger) FilesIncluded(files []string) {
 }
 
 // TokenUsageCtx displays token usage statistics in a styled box
-func (l *Logger) TokenUsageCtx(ctx context.Context, inputTokens, outputTokens int, responseTime time.Duration, estimatedCost float64) {
+func (l *Logger) TokenUsageCtx(ctx context.Context, inputTokens, outputTokens, cacheCreation, cacheRead int, responseTime time.Duration, estimatedCost float64) {
 	totalTokens := inputTokens + outputTokens
+
+	// Cache hit rate over total input work (regular + cache read + cache write).
+	// Anthropic's InputTokens already excludes cached tokens, so sum all three.
+	var cacheHitRate float64
+	if totalInput := inputTokens + cacheRead + cacheCreation; totalInput > 0 {
+		cacheHitRate = float64(cacheRead) / float64(totalInput) * 100
+	}
 
 	divider := l.theme.Muted.Render(strings.Repeat("-", 32))
 	content := []string{
@@ -194,6 +204,15 @@ func (l *Logger) TokenUsageCtx(ctx context.Context, inputTokens, outputTokens in
 		fmt.Sprintf("%s %s",
 			l.theme.Muted.Render("Output Tokens:"),
 			l.theme.Normal.Render(fmt.Sprintf("%d", outputTokens))),
+		fmt.Sprintf("%s %s",
+			l.theme.Muted.Render("Cache Write:"),
+			l.theme.Warning.Render(fmt.Sprintf("%d", cacheCreation))),
+		fmt.Sprintf("%s %s",
+			l.theme.Muted.Render("Cache Read:"),
+			l.theme.Success.Render(fmt.Sprintf("%d", cacheRead))),
+		fmt.Sprintf("%s %s",
+			l.theme.Muted.Render("Cache Hit Rate:"),
+			l.theme.Normal.Render(fmt.Sprintf("%.1f%%", cacheHitRate))),
 		divider,
 		fmt.Sprintf("%s %s",
 			l.theme.Muted.Render("Total Tokens:"),
@@ -217,6 +236,9 @@ func (l *Logger) TokenUsageCtx(ctx context.Context, inputTokens, outputTokens in
 		Field("input_tokens", inputTokens).
 		Field("output_tokens", outputTokens).
 		Field("total_tokens", totalTokens).
+		Field("cache_write_tokens", cacheCreation).
+		Field("cache_read_tokens", cacheRead).
+		Field("cache_hit_rate_percent", cacheHitRate).
 		Field("response_time_ms", responseTime.Milliseconds()).
 		Field("estimated_cost_usd", estimatedCost).
 		Pretty(fmt.Sprintf("%s Token usage:\n%s", theme.IconChart, box)).
@@ -224,8 +246,8 @@ func (l *Logger) TokenUsageCtx(ctx context.Context, inputTokens, outputTokens in
 }
 
 // TokenUsage displays token usage statistics in a styled box
-func (l *Logger) TokenUsage(inputTokens, outputTokens int, responseTime time.Duration, estimatedCost float64) {
-	l.TokenUsageCtx(context.Background(), inputTokens, outputTokens, responseTime, estimatedCost)
+func (l *Logger) TokenUsage(inputTokens, outputTokens, cacheCreation, cacheRead int, responseTime time.Duration, estimatedCost float64) {
+	l.TokenUsageCtx(context.Background(), inputTokens, outputTokens, cacheCreation, cacheRead, responseTime, estimatedCost)
 }
 
 // ResponseWritten logs successful response write

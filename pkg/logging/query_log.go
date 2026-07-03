@@ -15,20 +15,23 @@ import (
 
 // QueryLog represents a single API query log entry
 type QueryLog struct {
-	Timestamp     time.Time `json:"timestamp"`
-	RequestID     string    `json:"request_id,omitempty"`
-	Model         string    `json:"model"`
-	InputTokens   int64     `json:"input_tokens"`
-	OutputTokens  int64     `json:"output_tokens"`
-	ResponseTime  float64   `json:"response_time_seconds"`
-	EstimatedCost float64   `json:"estimated_cost_usd"`
-	Error         string    `json:"error,omitempty"`
-	Success       bool      `json:"success"`
-	WorkingDir    string    `json:"working_dir,omitempty"`
-	GitRepo       string    `json:"git_repo,omitempty"`
-	GitBranch     string    `json:"git_branch,omitempty"`
-	GitCommit     string    `json:"git_commit,omitempty"`
-	Caller        string    `json:"caller,omitempty"`
+	Timestamp           time.Time `json:"timestamp"`
+	RequestID           string    `json:"request_id,omitempty"`
+	Model               string    `json:"model"`
+	InputTokens         int64     `json:"input_tokens"`
+	OutputTokens        int64     `json:"output_tokens"`
+	CacheCreationTokens int64     `json:"cache_creation_tokens"`
+	CacheReadTokens     int64     `json:"cache_read_tokens"`
+	CacheHitRate        float64   `json:"cache_hit_rate"`
+	ResponseTime        float64   `json:"response_time_seconds"`
+	EstimatedCost       float64   `json:"estimated_cost_usd"`
+	Error               string    `json:"error,omitempty"`
+	Success             bool      `json:"success"`
+	WorkingDir          string    `json:"working_dir,omitempty"`
+	GitRepo             string    `json:"git_repo,omitempty"`
+	GitBranch           string    `json:"git_branch,omitempty"`
+	GitCommit           string    `json:"git_commit,omitempty"`
+	Caller              string    `json:"caller,omitempty"`
 }
 
 // QueryLogger handles logging API queries to a file
@@ -88,13 +91,13 @@ func (ql *QueryLogger) Log(entry QueryLog) error {
 	return nil
 }
 
-// EstimateCost calculates the estimated cost for a given model and token counts
-// Pricing as of Jan 2026 - see https://platform.claude.com/docs/en/about-claude/pricing
-func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
+// modelPrices resolves the per-million-token input and output prices for a
+// model. Pricing as of Jan 2026 - see
+// https://platform.claude.com/docs/en/about-claude/pricing. inputTokens is used
+// only to decide whether Sonnet long-context pricing applies.
+func modelPrices(model string, inputTokens int64) (inputPrice, outputPrice float64) {
 	// Resolve alias first
 	model = models.ResolveAlias(model)
-
-	var inputPrice, outputPrice float64 // per million tokens
 
 	// Check if this is a Sonnet model eligible for long context pricing
 	isSonnet := strings.Contains(model, "sonnet-4-6") || strings.Contains(model, "sonnet-4.6") ||
@@ -171,8 +174,25 @@ func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
 		outputPrice = 15.00
 	}
 
+	return inputPrice, outputPrice
+}
+
+// EstimateCost calculates the estimated cost for a given model and token counts.
+func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
+	return EstimateCostWithCache(model, inputTokens, outputTokens, 0, 0)
+}
+
+// EstimateCostWithCache calculates the estimated cost including Anthropic prompt
+// caching. Anthropic bills cache-write tokens at 1.25x the input price and
+// cache-read tokens at 0.10x the input price; regular InputTokens already
+// exclude cached tokens, so the three input tiers sum without double-counting.
+func EstimateCostWithCache(model string, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64) float64 {
+	inputPrice, outputPrice := modelPrices(model, inputTokens)
+
 	inputCost := (float64(inputTokens) / 1_000_000) * inputPrice
+	cacheCreationCost := (float64(cacheCreationTokens) / 1_000_000) * inputPrice * 1.25
+	cacheReadCost := (float64(cacheReadTokens) / 1_000_000) * inputPrice * 0.10
 	outputCost := (float64(outputTokens) / 1_000_000) * outputPrice
 
-	return inputCost + outputCost
+	return inputCost + cacheCreationCost + cacheReadCost + outputCost
 }
