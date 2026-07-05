@@ -272,7 +272,8 @@ func TestNewUsageResult(t *testing.T) {
 
 // TestDescribeRequestLadder pins the manifest-facing block plan for a ladder
 // request: system → layers (breakpoint+TTL on the last) → context docs →
-// history (breakpoint) → turn (never cached).
+// one history entry per prior-turn block (breakpoint on the LAST only) →
+// turn (never cached). Empty history elements are dropped (FilterHistoryBlocks).
 func TestDescribeRequestLadder(t *testing.T) {
 	dir := t.TempDir()
 	layer0 := mkFile(t, dir, "00-base.xml", "layer zero")
@@ -283,7 +284,7 @@ func TestDescribeRequestLadder(t *testing.T) {
 		Model:         "claude-test",
 		Prompt:        "turn K",
 		SystemPrompt:  "template",
-		HistoryPrefix: "turns 1..K-1",
+		HistoryBlocks: []string{"turn 1", "", "turn 2"}, // empty element dropped
 		WorkDir:       dir,
 		CacheLayout:   CacheLayoutLadder,
 		CacheTTL:      CacheTTL1h,
@@ -299,11 +300,24 @@ func TestDescribeRequestLadder(t *testing.T) {
 		{Kind: RequestBlockLayer, Path: layer0},
 		{Kind: RequestBlockLayer, Path: layer1, Breakpoint: true, TTL: CacheTTL1h},
 		{Kind: RequestBlockContext, Path: extra},
+		{Kind: RequestBlockHistory},
 		{Kind: RequestBlockHistory, Breakpoint: true, TTL: CacheTTL1h},
 		{Kind: RequestBlockTurn},
 	}
 	if !reflect.DeepEqual(entries, want) {
 		t.Errorf("entries = %+v\nwant %+v", entries, want)
+	}
+
+	// Breakpoint budget for the combined shape: system(1) + last-layer(2) +
+	// last-history(3) = 3 of the API's 4, one spare (spec 19 D1/P4).
+	bpCount := 0
+	for _, e := range entries {
+		if e.Breakpoint {
+			bpCount++
+		}
+	}
+	if bpCount != 3 {
+		t.Errorf("combined ladder shape places %d breakpoints, want exactly 3", bpCount)
 	}
 
 	// No system/history (the P2 flow chat shape): single breakpoint on the

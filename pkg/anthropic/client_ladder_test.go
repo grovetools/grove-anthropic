@@ -161,7 +161,7 @@ func TestBuildMessageParamsTTLThreading(t *testing.T) {
 		Prompt:        "current turn",
 		SystemPrompt:  "you are the oracle",
 		Regions:       ladderRegions(2, 1),
-		HistoryPrefix: "turns 1..K-1",
+		HistoryBlocks: []string{"turn 1", "turn 2"},
 		MaxTokens:     100,
 		CacheTTL:      CacheTTL1h,
 	}
@@ -171,7 +171,7 @@ func TestBuildMessageParamsTTLThreading(t *testing.T) {
 	}
 	s := string(raw)
 	if got, want := strings.Count(s, `"cache_control"`), 3; got != want {
-		t.Fatalf("cache_control count = %d, want %d (system + last layer + history); json: %s", got, want, s)
+		t.Fatalf("cache_control count = %d, want %d (system + last layer + LAST history block); json: %s", got, want, s)
 	}
 	if got, want := strings.Count(s, `"ttl":"1h"`), 3; got != want {
 		t.Errorf(`"ttl":"1h" count = %d, want %d — every breakpoint must carry the TTL; json: %s`, got, want, s)
@@ -191,24 +191,26 @@ func TestBuildMessageParamsTTLThreading(t *testing.T) {
 	}
 }
 
-// TestBuildMessageParamsLadderShape asserts the ladder block order: layer docs,
-// context docs, history text block (with breakpoint), prompt text block
-// (never cached); system param carries BP1.
+// TestBuildMessageParamsLadderShape asserts the combined ladder block order
+// (spec 19 P4): layer docs, context docs, one history text block PER prior
+// turn (breakpoint on the LAST history block only), prompt text block (never
+// cached); system param carries BP1. Total breakpoints: exactly 3 — one
+// spare of the API's 4.
 func TestBuildMessageParamsLadderShape(t *testing.T) {
 	req := GenerateRequest{
 		Model:         "claude-test",
 		Prompt:        "current turn",
 		SystemPrompt:  "template",
 		Regions:       ladderRegions(2, 1),
-		HistoryPrefix: "history bytes",
+		HistoryBlocks: []string{"turn 1 bytes", "turn 2 bytes", "turn 3 bytes"},
 		MaxTokens:     50,
 		CacheTTL:      CacheTTL1h,
 	}
 	params := buildMessageParams(req, []string{"f0", "f1", "f2"})
 
 	blocks := params.Messages[0].Content
-	if len(blocks) != 5 {
-		t.Fatalf("block count = %d, want 5 (3 docs + history + prompt)", len(blocks))
+	if len(blocks) != 7 {
+		t.Fatalf("block count = %d, want 7 (3 docs + 3 history + prompt)", len(blocks))
 	}
 	// Docs 0..2: only index 1 (last layer) has cache_control.
 	for i := 0; i < 3; i++ {
@@ -221,16 +223,26 @@ func TestBuildMessageParamsLadderShape(t *testing.T) {
 			t.Errorf("doc block %d cache_control presence = %v, want %v", i, hasCC, i == 1)
 		}
 	}
-	hist := blocks[3].OfText
-	if hist == nil || hist.Text != "history bytes" {
-		t.Fatalf("block 3: want history text block, got %+v", blocks[3])
+	// History blocks 3..5: byte-per-turn text blocks, breakpoint ONLY on the
+	// last (a mid-history breakpoint would waste budget; earlier turns are
+	// covered by the last block's save point).
+	for i, want := range []string{"turn 1 bytes", "turn 2 bytes", "turn 3 bytes"} {
+		hist := blocks[3+i].OfText
+		if hist == nil || hist.Text != want {
+			t.Fatalf("block %d: want history text block %q, got %+v", 3+i, want, blocks[3+i])
+		}
+		isLast := i == 2
+		hasCC := hist.CacheControl.Type == "ephemeral"
+		if hasCC != isLast {
+			t.Errorf("history block %d cache_control presence = %v, want %v", i, hasCC, isLast)
+		}
+		if isLast && hist.CacheControl.TTL != anthropic.BetaCacheControlEphemeralTTLTTL1h {
+			t.Errorf("last history block TTL = %q, want 1h", hist.CacheControl.TTL)
+		}
 	}
-	if hist.CacheControl.TTL != anthropic.BetaCacheControlEphemeralTTLTTL1h {
-		t.Errorf("history block TTL = %q, want 1h", hist.CacheControl.TTL)
-	}
-	prompt := blocks[4].OfText
+	prompt := blocks[6].OfText
 	if prompt == nil || prompt.Text != "current turn" {
-		t.Fatalf("block 4: want prompt text block, got %+v", blocks[4])
+		t.Fatalf("block 6: want prompt text block, got %+v", blocks[6])
 	}
 	if prompt.CacheControl.Type != "" || prompt.CacheControl.TTL != "" {
 		t.Errorf("prompt block must never carry cache_control, got %+v", prompt.CacheControl)

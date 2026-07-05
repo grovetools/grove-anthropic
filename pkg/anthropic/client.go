@@ -49,13 +49,15 @@ func NewClient(apiKeyOverride string) (*Client, error) {
 // GenerateRequest carries everything GenerateContent needs to build one
 // request: the prompt texts, the assembled document regions (see
 // assembleContextRegions in request.go), the optional byte-stable dialogue
-// history prefix, and the cache configuration.
+// history blocks (one per completed prior turn — see
+// RequestOptions.HistoryBlocks for why they are per-turn blocks; callers
+// must pass them through FilterHistoryBlocks), and the cache configuration.
 type GenerateRequest struct {
 	Model         string
 	Prompt        string
 	SystemPrompt  string
 	Regions       ContextRegions
-	HistoryPrefix string
+	HistoryBlocks []string
 	MaxTokens     int64
 	NoCache       bool
 	// CacheTTL is the TTL applied to every breakpoint in the request — one
@@ -73,7 +75,7 @@ type GenerateRequest struct {
 type breakpointPlan struct {
 	System  bool         // breakpoint on the system prompt block (ladder only)
 	Docs    map[int]bool // breakpoints on document indices into Regions.Files
-	History bool         // breakpoint on the HistoryPrefix text block (ladder only)
+	History bool         // breakpoint on the LAST HistoryBlocks text block (ladder only)
 }
 
 // count returns the total number of breakpoints the plan places.
@@ -90,12 +92,14 @@ func (p breakpointPlan) count() int {
 
 // computeBreakpoints returns the breakpoint plan for a request. hasSystem and
 // hasHistory report whether the request carries a non-empty system prompt /
-// HistoryPrefix block. noCache ⇒ zero breakpoints under both layouts.
+// any history blocks. noCache ⇒ zero breakpoints under both layouts.
 //
 // Ladder (spec 19 D1): one save point per lifetime boundary — the system
 // prompt (BP1), the last LayerFiles document (BP2; ContextFiles after it get
-// no breakpoint of their own), and the HistoryPrefix text block (BP3). The
-// Prompt block is never cached. Max 3 of the API's 4, one spare.
+// no breakpoint of their own), and the LAST HistoryBlocks text block (BP3 —
+// one breakpoint covers the whole append-only history region; earlier turns'
+// save points from previous requests remain valid read points). The Prompt
+// block is never cached. Max 3 of the API's 4, one spare.
 //
 // Legacy: exactly the historical cacheBreakpointIndices document set; the
 // system prompt and history block never carry breakpoints, preserving
@@ -212,9 +216,9 @@ func (c *Client) GenerateContent(ctx context.Context, req GenerateRequest) (stri
 // breakpoint placement, and TTL threading without touching the network.
 //
 // Block order: document blocks FIRST (in region order, so the stable/layer
-// prefix is cacheable), then the byte-stable HistoryPrefix text block when
-// present (spec 19 D7), then the volatile Prompt text block LAST so it stays
-// outside every cacheable prefix. Breakpoint placement per layout is
+// prefix is cacheable), then the byte-stable per-turn HistoryBlocks text
+// blocks when present (spec 19 D7; breakpoint on the last), then the volatile
+// Prompt text block LAST so it stays outside every cacheable prefix. Breakpoint placement per layout is
 // documented on computeBreakpoints; under legacy the last-doc breakpoint
 // makes caching work even when no stable/cold context exists — all documents
 // precede the per-turn prompt text, so they form a stable prefix across turns
@@ -222,9 +226,9 @@ func (c *Client) GenerateContent(ctx context.Context, req GenerateRequest) (stri
 // document changes, the stable/pinned breakpoints still yield a partial cache
 // hit.
 func buildMessageParams(req GenerateRequest, fileIDs []string) anthropic.BetaMessageNewParams {
-	plan := computeBreakpoints(req.Regions, req.SystemPrompt != "", req.HistoryPrefix != "", req.NoCache)
+	plan := computeBreakpoints(req.Regions, req.SystemPrompt != "", len(req.HistoryBlocks) > 0, req.NoCache)
 
-	contentBlocks := make([]anthropic.BetaContentBlockParamUnion, 0, 2+len(fileIDs))
+	contentBlocks := make([]anthropic.BetaContentBlockParamUnion, 0, 1+len(fileIDs)+len(req.HistoryBlocks))
 	for i, fileID := range fileIDs {
 		blk := anthropic.NewBetaDocumentBlock(anthropic.BetaFileDocumentSourceParam{
 			FileID: fileID,
@@ -235,11 +239,15 @@ func buildMessageParams(req GenerateRequest, fileIDs []string) anthropic.BetaMes
 		contentBlocks = append(contentBlocks, blk)
 	}
 
-	// Byte-stable dialogue history rides in its OWN text block so it can hold
-	// a cache breakpoint (ladder BP3); only the current turn stays volatile.
-	if req.HistoryPrefix != "" {
-		blk := anthropic.NewBetaTextBlock(req.HistoryPrefix)
-		if plan.History {
+	// Byte-stable dialogue history rides as one text block PER completed prior
+	// turn so cache matching — which happens at content-block boundaries —
+	// sees turn K's blocks repeated byte-identically at turn K+1 and only the
+	// newly appended turn re-writes. The single history breakpoint (ladder
+	// BP3) sits on the LAST history block; only the current turn (the Prompt
+	// block below) stays volatile.
+	for i, h := range req.HistoryBlocks {
+		blk := anthropic.NewBetaTextBlock(h)
+		if plan.History && i == len(req.HistoryBlocks)-1 {
 			blk.OfText.CacheControl = cacheControlParam(req.CacheTTL)
 		}
 		contentBlocks = append(contentBlocks, blk)

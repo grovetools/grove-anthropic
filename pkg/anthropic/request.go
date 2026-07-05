@@ -45,10 +45,10 @@ type RequestOptions struct {
 	// byte-identical to prior releases. CacheLayoutLadder orders the payload
 	// strictly by lifetime: system prompt (breakpoint) → LayerFiles documents
 	// in order (breakpoint on the last) → ContextFiles documents (no own
-	// breakpoint) → HistoryPrefix text block (breakpoint) → Prompt (never
-	// cached). Under ladder, WorkDir hot/cold context resolution and CLAUDE.md
-	// are NOT included (D6): ladder callers pass everything explicitly via
-	// LayerFiles/ContextFiles.
+	// breakpoint) → HistoryBlocks text blocks (breakpoint on the last) →
+	// Prompt (never cached). Under ladder, WorkDir hot/cold context resolution
+	// and CLAUDE.md are NOT included (D6): ladder callers pass everything
+	// explicitly via LayerFiles/ContextFiles.
 	CacheLayout string
 	// CacheTTL selects the cache_control TTL applied to EVERY breakpoint in
 	// the request — a single TTL for all, per spec 19 D2 (which also
@@ -62,11 +62,28 @@ type RequestOptions struct {
 	// as given (never sorted): byte/position stability across turns is what
 	// keeps the layer prefix cached. Ignored under the legacy layout.
 	LayerFiles []string
-	// HistoryPrefix is the byte-stable dialogue history (turns 1…K−1). When
-	// non-empty it is emitted as its own text block immediately before the
-	// volatile Prompt block, carrying a cache breakpoint under the ladder
-	// layout (spec 19 D7). Empty until flow wires it in P4.
-	HistoryPrefix string
+	// HistoryBlocks is the byte-stable dialogue history (turns 1…K−1, spec 19
+	// D7): ONE text block per completed prior turn, emitted in caller order
+	// immediately before the volatile Prompt block. Under the ladder layout
+	// the LAST history block carries a cache breakpoint (BP3).
+	//
+	// Why per-turn blocks instead of one concatenated history string: the
+	// Anthropic cache matches stored prefixes at content-block boundaries
+	// (each breakpoint's lookback checks ~20 previous BLOCK positions). A
+	// single text block that grows by appending is a different block on every
+	// turn, so the previous turn's save point could never match — the whole
+	// history region would fall back to the last-layer breakpoint and re-write
+	// at the TTL write premium every turn, which is strictly worse than not
+	// caching it. With one block per turn, turn K+1 repeats turn K's blocks
+	// byte-identically and appends new ones, so the previous history
+	// breakpoint (one block back) hits and only the newly appended turn bytes
+	// are written. Precondition: a prior turn's serialization must never
+	// change retroactively — grove-flow keeps the mutating
+	// status="awaiting_response"/respond_as attributes exclusively in Prompt.
+	//
+	// Empty elements are dropped (the API rejects empty text blocks); see
+	// FilterHistoryBlocks.
+	HistoryBlocks []string
 	// HotContextFile / ColdContextFile pin the generated/cached context to
 	// explicit absolute paths instead of resolving them from WorkDir. grove-
 	// flow sets these to per-job paths (under <plan>/.artifacts/<job-id>/) so
@@ -201,6 +218,27 @@ func assembleContextRegions(options RequestOptions, workDir, hotContextFile, col
 	}
 }
 
+// FilterHistoryBlocks drops empty elements from a HistoryBlocks slice while
+// preserving order. The API rejects empty text blocks, and the request plan
+// (DescribeRequest) must agree block-for-block with what actually uploads, so
+// both paths — and callers describing requests (grove-flow's manifest) —
+// share this normalization.
+func FilterHistoryBlocks(blocks []string) []string {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		if b != "" {
+			out = append(out, b)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // IsEmptyColdContext reports whether path is a cx-generated cached-context
 // file with zero cold files (cx emits `<cold-context files="0">` when the
 // rules have no `---` cold section). Exported so ladder callers (grove-flow)
@@ -276,7 +314,8 @@ func DescribeRequest(options RequestOptions) ([]RequestPlanEntry, error) {
 	}
 
 	regions := assembleContextRegions(options, workDir, hotContextFile, coldContextFile)
-	plan := computeBreakpoints(regions, options.SystemPrompt != "", options.HistoryPrefix != "", options.NoCache)
+	history := FilterHistoryBlocks(options.HistoryBlocks)
+	plan := computeBreakpoints(regions, options.SystemPrompt != "", len(history) > 0, options.NoCache)
 
 	ttlFor := func(breakpoint bool) string {
 		if breakpoint {
@@ -285,7 +324,7 @@ func DescribeRequest(options RequestOptions) ([]RequestPlanEntry, error) {
 		return ""
 	}
 
-	entries := make([]RequestPlanEntry, 0, len(regions.Files)+3)
+	entries := make([]RequestPlanEntry, 0, len(regions.Files)+len(history)+2)
 	if options.SystemPrompt != "" {
 		entries = append(entries, RequestPlanEntry{Kind: RequestBlockSystem, Breakpoint: plan.System, TTL: ttlFor(plan.System)})
 	}
@@ -296,8 +335,11 @@ func DescribeRequest(options RequestOptions) ([]RequestPlanEntry, error) {
 		}
 		entries = append(entries, RequestPlanEntry{Kind: kind, Path: f, Breakpoint: plan.Docs[i], TTL: ttlFor(plan.Docs[i])})
 	}
-	if options.HistoryPrefix != "" {
-		entries = append(entries, RequestPlanEntry{Kind: RequestBlockHistory, Breakpoint: plan.History, TTL: ttlFor(plan.History)})
+	// One entry per history block; only the LAST history block can carry the
+	// history breakpoint (see HistoryBlocks on RequestOptions).
+	for i := range history {
+		bp := plan.History && i == len(history)-1
+		entries = append(entries, RequestPlanEntry{Kind: RequestBlockHistory, Breakpoint: bp, TTL: ttlFor(bp)})
 	}
 	// The per-turn prompt block is always emitted last and never cached.
 	entries = append(entries, RequestPlanEntry{Kind: RequestBlockTurn})
@@ -487,7 +529,7 @@ func (r *RequestRunner) RunWithUsage(ctx context.Context, options RequestOptions
 		Prompt:        options.Prompt,
 		SystemPrompt:  options.SystemPrompt,
 		Regions:       regions,
-		HistoryPrefix: options.HistoryPrefix,
+		HistoryBlocks: FilterHistoryBlocks(options.HistoryBlocks),
 		MaxTokens:     options.MaxTokens,
 		NoCache:       options.NoCache,
 		CacheTTL:      options.CacheTTL,
