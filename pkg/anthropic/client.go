@@ -46,9 +46,96 @@ func NewClient(apiKeyOverride string) (*Client, error) {
 	return &Client{client: sdkClient}, nil
 }
 
+// GenerateRequest carries everything GenerateContent needs to build one
+// request: the prompt texts, the assembled document regions (see
+// assembleContextRegions in request.go), the optional byte-stable dialogue
+// history prefix, and the cache configuration.
+type GenerateRequest struct {
+	Model         string
+	Prompt        string
+	SystemPrompt  string
+	Regions       ContextRegions
+	HistoryPrefix string
+	MaxTokens     int64
+	NoCache       bool
+	// CacheTTL is the TTL applied to every breakpoint in the request — one
+	// TTL for all (spec 19 D2). "", CacheTTL5m, or CacheTTL1h; empty leaves
+	// the SDK param's TTL field unset so it is not serialized (omitzero),
+	// byte-identical to the pre-TTL behavior (the API defaults to 5m).
+	CacheTTL string
+}
+
+// breakpointPlan describes where a request's cache_control breakpoints go.
+// The API allows at most 4 per request, counting a system-prompt breakpoint;
+// both layouts stay within budget: legacy places up to 3 document breakpoints
+// (System/History are never set), ladder places up to 3 total (system + last
+// layer document + history block), keeping one spare.
+type breakpointPlan struct {
+	System  bool         // breakpoint on the system prompt block (ladder only)
+	Docs    map[int]bool // breakpoints on document indices into Regions.Files
+	History bool         // breakpoint on the HistoryPrefix text block (ladder only)
+}
+
+// count returns the total number of breakpoints the plan places.
+func (p breakpointPlan) count() int {
+	n := len(p.Docs)
+	if p.System {
+		n++
+	}
+	if p.History {
+		n++
+	}
+	return n
+}
+
+// computeBreakpoints returns the breakpoint plan for a request. hasSystem and
+// hasHistory report whether the request carries a non-empty system prompt /
+// HistoryPrefix block. noCache ⇒ zero breakpoints under both layouts.
+//
+// Ladder (spec 19 D1): one save point per lifetime boundary — the system
+// prompt (BP1), the last LayerFiles document (BP2; ContextFiles after it get
+// no breakpoint of their own), and the HistoryPrefix text block (BP3). The
+// Prompt block is never cached. Max 3 of the API's 4, one spare.
+//
+// Legacy: exactly the historical cacheBreakpointIndices document set; the
+// system prompt and history block never carry breakpoints, preserving
+// byte-identity for existing callers.
+func computeBreakpoints(regions ContextRegions, hasSystem, hasHistory, noCache bool) breakpointPlan {
+	plan := breakpointPlan{Docs: make(map[int]bool)}
+	if noCache {
+		return plan
+	}
+	if regions.Layout == CacheLayoutLadder {
+		plan.System = hasSystem
+		if regions.LayerCount > 0 {
+			plan.Docs[regions.LayerCount-1] = true
+		}
+		plan.History = hasHistory
+		return plan
+	}
+	plan.Docs = cacheBreakpointIndices(len(regions.Files), regions.StableCount, regions.PinnedCount, noCache)
+	return plan
+}
+
+// cacheControlParam builds the ephemeral cache_control param for one
+// breakpoint, threading the request-wide TTL (spec 19 D2). Empty ttl leaves
+// the TTL field unset — `omitzero` keeps it out of the serialized request,
+// byte-identical to the pre-TTL behavior.
+func cacheControlParam(ttl string) anthropic.BetaCacheControlEphemeralParam {
+	cc := anthropic.NewBetaCacheControlEphemeralParam()
+	switch ttl {
+	case CacheTTL5m:
+		cc.TTL = anthropic.BetaCacheControlEphemeralTTLTTL5m
+	case CacheTTL1h:
+		cc.TTL = anthropic.BetaCacheControlEphemeralTTLTTL1h
+	}
+	return cc
+}
+
 // cacheBreakpointIndices returns the set of contextFiles indices that should
 // carry an Anthropic cache_control breakpoint, given the stable/pinned/volatile
-// partition. contextFiles are ordered [stable…][pinned…][volatile…]. Up to three
+// partition of the LEGACY layout. contextFiles are ordered
+// [stable…][pinned…][volatile…]. Up to three
 // breakpoints are placed (the API allows four): a fixed one on the last stable
 // document (stableCount-1), a fixed one on the last pinned document
 // (stableCount+pinnedCount-1), and a moving one on the last document overall
@@ -72,25 +159,23 @@ func cacheBreakpointIndices(total, stableCount, pinnedCount int, noCache bool) m
 }
 
 // GenerateContent sends a request to the Anthropic API with context files.
-// stableCount is the number of leading contextFiles that form the stable,
-// cacheable prefix; pinnedCount is the number of documents immediately after the
-// stable prefix that form a second, stable-appended cacheable region (see
-// cacheBreakpointIndices). Anthropic cache_control breakpoints are placed on the
-// last stable, last pinned, and last document overall unless noCache is set.
-func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64, stableCount, pinnedCount int, noCache bool) (string, *anthropic.BetaUsage, error) {
+// The request's document payload, region partition (which drives breakpoint
+// placement — see computeBreakpoints), layout, and cache TTL all travel in
+// req; RunWithUsage assembles them via assembleContextRegions.
+func (c *Client) GenerateContent(ctx context.Context, req GenerateRequest) (string, *anthropic.BetaUsage, error) {
 	startTime := time.Now()
 	requestID := os.Getenv("GROVE_REQUEST_ID")
 	contextInfo := grovecontext.GetContextInfo("")
 	caller := grovecontext.GetCaller()
 
 	// Execute the actual API call
-	responseText, usage, err := c.generateContentInternal(ctx, model, prompt, systemPrompt, contextFiles, maxTokens, stableCount, pinnedCount, noCache)
+	responseText, usage, err := c.generateContentInternal(ctx, req)
 
 	// Log the request (success or failure)
 	logEntry := logging.QueryLog{
 		Timestamp:    startTime,
 		RequestID:    requestID,
-		Model:        model,
+		Model:        req.Model,
 		ResponseTime: time.Since(startTime).Seconds(),
 		Success:      err == nil,
 		WorkingDir:   contextInfo.WorkingDir,
@@ -108,7 +193,7 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 		if totalInput := usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens; totalInput > 0 {
 			logEntry.CacheHitRate = float64(usage.CacheReadInputTokens) / float64(totalInput) * 100
 		}
-		logEntry.EstimatedCost = logging.EstimateCostWithCache(model, usage.InputTokens, usage.OutputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens)
+		logEntry.EstimatedCost = logging.EstimateCostWithCache(req.Model, usage.InputTokens, usage.OutputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens)
 	}
 
 	if err != nil {
@@ -122,59 +207,88 @@ func (c *Client) GenerateContent(ctx context.Context, model, prompt, systemPromp
 	return responseText, usage, err
 }
 
-// generateContentInternal contains the core API call logic.
-// Uses streaming internally to support longer requests (>10 min) with high max_tokens.
-func (c *Client) generateContentInternal(ctx context.Context, model, prompt, systemPrompt string, contextFiles []string, maxTokens int64, stableCount, pinnedCount int, noCache bool) (string, *anthropic.BetaUsage, error) {
-	contentBlocks := make([]anthropic.BetaContentBlockParamUnion, 0, 1+len(contextFiles))
+// buildMessageParams assembles the full message parameters for a request from
+// the already-uploaded Files-API file IDs (parallel to req.Regions.Files). It
+// is split from generateContentInternal so tests can assert on block order,
+// breakpoint placement, and TTL threading without touching the network.
+//
+// Block order: document blocks FIRST (in region order, so the stable/layer
+// prefix is cacheable), then the byte-stable HistoryPrefix text block when
+// present (spec 19 D7), then the volatile Prompt text block LAST so it stays
+// outside every cacheable prefix. Breakpoint placement per layout is
+// documented on computeBreakpoints; under legacy the last-doc breakpoint
+// makes caching work even when no stable/cold context exists — all documents
+// precede the per-turn prompt text, so they form a stable prefix across turns
+// of a chat regardless of how the rules file splits hot/cold. When a volatile
+// document changes, the stable/pinned breakpoints still yield a partial cache
+// hit.
+func buildMessageParams(req GenerateRequest, fileIDs []string) anthropic.BetaMessageNewParams {
+	plan := computeBreakpoints(req.Regions, req.SystemPrompt != "", req.HistoryPrefix != "", req.NoCache)
 
-	// Upload context files and add them as document blocks FIRST, so that the
-	// stable context forms a cacheable prefix. Files are ordered
-	// stable-then-pinned-then-volatile by the caller (see request.go). Up to
-	// three cache_control breakpoints (the API allows four), computed by
-	// cacheBreakpointIndices: a fixed one on the last stable document, a fixed
-	// one on the last pinned document (the stable-appended region added
-	// mid-chat), and a moving one on the last document overall. The last-doc
-	// breakpoint makes caching work even when no stable/cold context exists — all
-	// documents precede the per-turn prompt text, so they form a stable prefix
-	// across turns of a chat regardless of how the rules file splits hot/cold.
-	// When a volatile document changes, the stable/pinned breakpoints still yield
-	// a partial cache hit.
-	breakpoints := cacheBreakpointIndices(len(contextFiles), stableCount, pinnedCount, noCache)
-	for i, filePath := range contextFiles {
-		metadata, err := uploadFile(ctx, &c.client, filePath)
-		if err != nil {
-			return "", nil, fmt.Errorf("uploading context file %s: %w", filePath, err)
-		}
-
+	contentBlocks := make([]anthropic.BetaContentBlockParamUnion, 0, 2+len(fileIDs))
+	for i, fileID := range fileIDs {
 		blk := anthropic.NewBetaDocumentBlock(anthropic.BetaFileDocumentSourceParam{
-			FileID: metadata.ID,
+			FileID: fileID,
 		})
-		if breakpoints[i] {
-			blk.OfDocument.CacheControl = anthropic.NewBetaCacheControlEphemeralParam()
+		if plan.Docs[i] {
+			blk.OfDocument.CacheControl = cacheControlParam(req.CacheTTL)
+		}
+		contentBlocks = append(contentBlocks, blk)
+	}
+
+	// Byte-stable dialogue history rides in its OWN text block so it can hold
+	// a cache breakpoint (ladder BP3); only the current turn stays volatile.
+	if req.HistoryPrefix != "" {
+		blk := anthropic.NewBetaTextBlock(req.HistoryPrefix)
+		if plan.History {
+			blk.OfText.CacheControl = cacheControlParam(req.CacheTTL)
 		}
 		contentBlocks = append(contentBlocks, blk)
 	}
 
 	// Add the text prompt LAST so it stays outside the cacheable prefix.
-	contentBlocks = append(contentBlocks, anthropic.NewBetaTextBlock(prompt))
+	contentBlocks = append(contentBlocks, anthropic.NewBetaTextBlock(req.Prompt))
 
 	// Construct the message parameters
 	params := anthropic.BetaMessageNewParams{
-		Model:     anthropic.Model(model),
-		MaxTokens: maxTokens,
+		Model:     anthropic.Model(req.Model),
+		MaxTokens: req.MaxTokens,
 		Messages: []anthropic.BetaMessageParam{
 			anthropic.NewBetaUserMessage(contentBlocks...),
 		},
 		Betas: []anthropic.AnthropicBeta{anthropic.AnthropicBetaFilesAPI2025_04_14},
 	}
 
-	// Add system prompt if provided
-	if systemPrompt != "" {
-		params.System = []anthropic.BetaTextBlockParam{{
+	// Add system prompt if provided; under ladder it carries BP1.
+	if req.SystemPrompt != "" {
+		sys := anthropic.BetaTextBlockParam{
 			Type: "text",
-			Text: systemPrompt,
-		}}
+			Text: req.SystemPrompt,
+		}
+		if plan.System {
+			sys.CacheControl = cacheControlParam(req.CacheTTL)
+		}
+		params.System = []anthropic.BetaTextBlockParam{sys}
 	}
+
+	return params
+}
+
+// generateContentInternal contains the core API call logic.
+// Uses streaming internally to support longer requests (>10 min) with high max_tokens.
+func (c *Client) generateContentInternal(ctx context.Context, req GenerateRequest) (string, *anthropic.BetaUsage, error) {
+	// Upload context files first; document blocks reference the resulting
+	// Files-API IDs in region order (see buildMessageParams for the layout).
+	fileIDs := make([]string, 0, len(req.Regions.Files))
+	for _, filePath := range req.Regions.Files {
+		metadata, err := uploadFile(ctx, &c.client, filePath)
+		if err != nil {
+			return "", nil, fmt.Errorf("uploading context file %s: %w", filePath, err)
+		}
+		fileIDs = append(fileIDs, metadata.ID)
+	}
+
+	params := buildMessageParams(req, fileIDs)
 
 	// Use streaming API to support longer requests without timeout
 	stream := c.client.Beta.Messages.NewStreaming(ctx, params)
