@@ -67,7 +67,7 @@ type GenerateRequest struct {
 
 // breakpointPlan describes where a request's cache_control breakpoints go.
 // The API allows at most 4 per request, counting a system-prompt breakpoint;
-// both layouts stay within budget: legacy places up to 3 document breakpoints
+// both layouts stay within budget: legacy places up to 2 document breakpoints
 // (System/History are never set), ladder places up to 3 total (system + last
 // layer document + history block), keeping one spare.
 type breakpointPlan struct {
@@ -113,7 +113,7 @@ func computeBreakpoints(regions ContextRegions, hasSystem, hasHistory, noCache b
 		plan.History = hasHistory
 		return plan
 	}
-	plan.Docs = cacheBreakpointIndices(len(regions.Files), regions.StableCount, regions.PinnedCount, noCache)
+	plan.Docs = cacheBreakpointIndices(len(regions.Files), regions.StableCount, noCache)
 	return plan
 }
 
@@ -133,26 +133,22 @@ func cacheControlParam(ttl string) anthropic.BetaCacheControlEphemeralParam {
 }
 
 // cacheBreakpointIndices returns the set of contextFiles indices that should
-// carry an Anthropic cache_control breakpoint, given the stable/pinned/volatile
+// carry an Anthropic cache_control breakpoint, given the stable/volatile
 // partition of the LEGACY layout. contextFiles are ordered
-// [stable…][pinned…][volatile…]. Up to three
-// breakpoints are placed (the API allows four): a fixed one on the last stable
-// document (stableCount-1), a fixed one on the last pinned document
-// (stableCount+pinnedCount-1), and a moving one on the last document overall
-// (total-1). When noCache is set no breakpoints are placed, preserving NoCache
-// semantics for free. With pinnedCount == 0 the result is exactly the
-// pre-pinned two-breakpoint set {stableCount-1, total-1}, so chats with no
-// pinned context produce byte-identical requests to before this change.
-func cacheBreakpointIndices(total, stableCount, pinnedCount int, noCache bool) map[int]bool {
+// [stable…][volatile…]. Up to two breakpoints are placed (the API allows
+// four): a fixed one on the last stable document (stableCount-1) and a moving
+// one on the last document overall (total-1). When noCache is set no
+// breakpoints are placed, preserving NoCache semantics for free. This is
+// exactly the historical pinned-free two-breakpoint set {stableCount-1,
+// total-1} — the pinned region and its third breakpoint were removed in spec
+// 19 P2 (D5), so legacy callers (who never pinned) stay byte-identical.
+func cacheBreakpointIndices(total, stableCount int, noCache bool) map[int]bool {
 	bps := make(map[int]bool)
 	if noCache || total == 0 {
 		return bps
 	}
 	if stableCount > 0 {
 		bps[stableCount-1] = true
-	}
-	if pinnedCount > 0 {
-		bps[stableCount+pinnedCount-1] = true
 	}
 	bps[total-1] = true
 	return bps
@@ -186,14 +182,17 @@ func (c *Client) GenerateContent(ctx context.Context, req GenerateRequest) (stri
 	}
 
 	if usage != nil {
+		write5m, write1h := splitCacheWrites(usage, req.CacheTTL)
 		logEntry.InputTokens = usage.InputTokens
 		logEntry.OutputTokens = usage.OutputTokens
 		logEntry.CacheCreationTokens = usage.CacheCreationInputTokens
+		logEntry.CacheWrite5mTokens = write5m
+		logEntry.CacheWrite1hTokens = write1h
 		logEntry.CacheReadTokens = usage.CacheReadInputTokens
 		if totalInput := usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens; totalInput > 0 {
 			logEntry.CacheHitRate = float64(usage.CacheReadInputTokens) / float64(totalInput) * 100
 		}
-		logEntry.EstimatedCost = logging.EstimateCostWithCache(req.Model, usage.InputTokens, usage.OutputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens)
+		logEntry.EstimatedCost = logging.EstimateCostWithCacheSplit(req.Model, usage.InputTokens, usage.OutputTokens, write5m, write1h, usage.CacheReadInputTokens)
 	}
 
 	if err != nil {

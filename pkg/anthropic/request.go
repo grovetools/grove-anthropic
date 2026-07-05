@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/grovetools/core/tui/theme"
 	grovecontext "github.com/grovetools/cx/pkg/context"
 	"github.com/grovetools/grove-anthropic/pkg/logging"
@@ -37,30 +38,17 @@ type RequestOptions struct {
 	MaxTokens     int64
 	NoCache       bool   // Disable Anthropic prompt caching for this request
 	APIKey        string // Explicitly pass API key to avoid context issues
-	// PinnedFiles are files placed in a stable, cacheable region *after* the
-	// cold/CLAUDE.md stable half and *before* the volatile hot half, each in the
-	// caller's declared order (do NOT sort). They get their own fixed
-	// cache_control breakpoint (see client.go cacheBreakpointIndices), so context
-	// added mid-chat preserves the already-cached stable prefix on the turn it is
-	// introduced and caches durably on every subsequent turn. grove-flow sets
-	// this from a chat job's `pinned_context` frontmatter. Empty ⇒ requests are
-	// byte-identical to the pre-pinned two-breakpoint behavior.
-	//
-	// Deprecated: removed in P2 of spec 19 (D5 — a pin is just a one-file
-	// layer); ignored under the ladder layout. Legacy-layout behavior is
-	// unchanged until then so flow keeps compiling between phases.
-	PinnedFiles []string
 	// CacheLayout selects how the request payload is ordered and where the
 	// Anthropic cache_control breakpoints go (spec 19 D1). Empty or
 	// CacheLayoutLegacy is the historical layout — cold-context/CLAUDE.md
-	// stable region, PinnedFiles region, hot+ContextFiles volatile region —
+	// stable region, then the hot+ContextFiles volatile region —
 	// byte-identical to prior releases. CacheLayoutLadder orders the payload
 	// strictly by lifetime: system prompt (breakpoint) → LayerFiles documents
 	// in order (breakpoint on the last) → ContextFiles documents (no own
 	// breakpoint) → HistoryPrefix text block (breakpoint) → Prompt (never
 	// cached). Under ladder, WorkDir hot/cold context resolution and CLAUDE.md
 	// are NOT included (D6): ladder callers pass everything explicitly via
-	// LayerFiles/ContextFiles, and PinnedFiles is ignored.
+	// LayerFiles/ContextFiles.
 	CacheLayout string
 	// CacheTTL selects the cache_control TTL applied to EVERY breakpoint in
 	// the request — a single TTL for all, per spec 19 D2 (which also
@@ -122,8 +110,8 @@ func (o RequestOptions) validateCacheOptions() error {
 // files to upload plus the region partition client.go needs to place cache
 // breakpoints (see computeBreakpoints). Exactly one partition applies,
 // selected by Layout:
-//   - legacy: Files = stable ++ pinned ++ volatile, described by
-//     StableCount/PinnedCount (the remainder is volatile)
+//   - legacy: Files = stable ++ volatile, described by StableCount (the
+//     remainder is volatile)
 //   - ladder: Files = layers ++ context, described by LayerCount (the
 //     remainder is caller ContextFiles, covered by the downstream history/
 //     spare breakpoints rather than one of their own)
@@ -131,7 +119,6 @@ type ContextRegions struct {
 	Layout      string
 	Files       []string
 	StableCount int // legacy only: cold-context + CLAUDE.md prefix length
-	PinnedCount int // legacy only: pinned region length
 	LayerCount  int // ladder only: layer-document prefix length
 }
 
@@ -141,19 +128,18 @@ type ContextRegions struct {
 // is directly testable.
 //
 // Legacy layout (the default): files are split into a STABLE half
-// (cold/cached context + CLAUDE.md), a PINNED region (caller-supplied
-// stable-appended files), and a VOLATILE half (hot context + caller-supplied
-// --context files), emitted stable→pinned→volatile so the stable+pinned
-// prefix is cacheable. Dedupe precedence is stable > pinned > volatile: a
-// path present in more than one channel stays in the earliest (most stable)
-// one, which is the safe direction (it was already before the later
-// breakpoint). This must remain byte-identical to the historical behavior —
-// see TestLegacyLayoutByteIdentity.
+// (cold/cached context + CLAUDE.md) and a VOLATILE half (hot context +
+// caller-supplied --context files), emitted stable→volatile so the stable
+// prefix is cacheable. Dedupe precedence is stable > volatile: a path present
+// in both channels stays in the earlier (stable) one, which is the safe
+// direction (it was already before the later breakpoint). This must remain
+// byte-identical to the historical pinned-free behavior — see
+// TestLegacyLayoutByteIdentity.
 //
 // Ladder layout (spec 19 D1/D6): LayerFiles in caller order form the layer
 // region; ContextFiles follow. workDir/hot/cold are not consulted (no
-// CLAUDE.md, no cx hot/cold artifacts) and PinnedFiles is ignored (D5).
-// Dedupe precedence is layers > context for the same reason as above.
+// CLAUDE.md, no cx hot/cold artifacts). Dedupe precedence is layers > context
+// for the same reason as above.
 func assembleContextRegions(options RequestOptions, workDir, hotContextFile, coldContextFile string) ContextRegions {
 	seen := make(map[string]bool)
 	addFile := func(dst *[]string, path string) {
@@ -182,26 +168,20 @@ func assembleContextRegions(options RequestOptions, workDir, hotContextFile, col
 		}
 	}
 
-	var stableFiles, pinnedFiles, volatileFiles []string
+	var stableFiles, volatileFiles []string
 
 	// Stable half: cold/cached context, then CLAUDE.md. cx always writes a
 	// cached-context file, even when the rules have no cold section — skip the
 	// empty stub so we don't upload it or waste a cache breakpoint on a
 	// document far below the cacheable minimum.
 	if coldContextFile != "" {
-		if _, err := os.Stat(coldContextFile); err == nil && !isEmptyColdContext(coldContextFile) {
+		if _, err := os.Stat(coldContextFile); err == nil && !IsEmptyColdContext(coldContextFile) {
 			addFile(&stableFiles, coldContextFile)
 		}
 	}
 	claudePath := filepath.Join(workDir, "CLAUDE.md")
 	if _, err := os.Stat(claudePath); err == nil {
 		addFile(&stableFiles, claudePath)
-	}
-
-	// Pinned region: caller-supplied stable-appended files, in declared order
-	// (do NOT sort — position stability across turns is what keeps them cached).
-	for _, f := range options.PinnedFiles {
-		addFile(&pinnedFiles, f)
 	}
 
 	// Volatile half: hot context, then caller-supplied context files.
@@ -216,16 +196,16 @@ func assembleContextRegions(options RequestOptions, workDir, hotContextFile, col
 
 	return ContextRegions{
 		Layout:      CacheLayoutLegacy,
-		Files:       append(append(append([]string{}, stableFiles...), pinnedFiles...), volatileFiles...),
+		Files:       append(append([]string{}, stableFiles...), volatileFiles...),
 		StableCount: len(stableFiles),
-		PinnedCount: len(pinnedFiles),
 	}
 }
 
-// isEmptyColdContext reports whether path is a cx-generated cached-context
+// IsEmptyColdContext reports whether path is a cx-generated cached-context
 // file with zero cold files (cx emits `<cold-context files="0">` when the
-// rules have no `---` cold section).
-func isEmptyColdContext(path string) bool {
+// rules have no `---` cold section). Exported so ladder callers (grove-flow)
+// can apply the same skip-the-empty-stub rule when assembling LayerFiles.
+func IsEmptyColdContext(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
@@ -234,6 +214,94 @@ func isEmptyColdContext(path string) bool {
 	buf := make([]byte, 512)
 	n, _ := f.Read(buf)
 	return strings.Contains(string(buf[:n]), `<cold-context files="0"`)
+}
+
+// Block kinds reported by DescribeRequest, in the vocabulary of the spec-19
+// per-turn request manifest (D9).
+const (
+	RequestBlockSystem  = "system"  // API system param
+	RequestBlockLayer   = "layer"   // ladder LayerFiles document
+	RequestBlockContext = "context" // other document (ContextFiles / legacy docs)
+	RequestBlockHistory = "history" // byte-stable dialogue-history text block
+	RequestBlockTurn    = "turn"    // volatile per-turn prompt text block
+)
+
+// RequestPlanEntry describes one block of an assembled request, in emission
+// order: what kind of block it is, which file backs it (document blocks only),
+// and whether it carries a cache_control breakpoint (and at which TTL).
+type RequestPlanEntry struct {
+	Kind       string
+	Path       string // document blocks: the file that will be uploaded; empty for text blocks
+	Breakpoint bool
+	TTL        string // the breakpoint's cache TTL ("" = API default 5m); empty when Breakpoint is false
+}
+
+// DescribeRequest returns the ordered block plan a request built from options
+// would emit — the exact document/text block sequence of buildMessageParams
+// with per-block breakpoint and TTL placement — without any network side
+// effects. It exists so callers (grove-flow's per-turn request manifest, spec
+// 19 D9) can record what will be uploaded and where the cache save points sit
+// without duplicating region-assembly/breakpoint logic outside this package.
+//
+// It shares assembleContextRegions and computeBreakpoints with the live
+// request path. Under the legacy layout hot/cold context paths resolve from
+// WorkDir (with HotContextFile/ColdContextFile overrides) exactly as
+// RunWithUsage resolves them, but rules-based regeneration is NOT run — the
+// description reflects the files as they exist on disk right now.
+func DescribeRequest(options RequestOptions) ([]RequestPlanEntry, error) {
+	if err := options.validateCacheOptions(); err != nil {
+		return nil, err
+	}
+
+	workDir := options.WorkDir
+	if workDir == "" {
+		var err error
+		workDir, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("getting current directory: %w", err)
+		}
+	}
+
+	var hotContextFile, coldContextFile string
+	if options.effectiveCacheLayout() == CacheLayoutLegacy {
+		ctxMgr := grovecontext.NewManager(workDir)
+		hotContextFile = ctxMgr.ResolveContextPath()
+		coldContextFile = ctxMgr.ResolveCachedContextPath()
+		if options.HotContextFile != "" {
+			hotContextFile = options.HotContextFile
+		}
+		if options.ColdContextFile != "" {
+			coldContextFile = options.ColdContextFile
+		}
+	}
+
+	regions := assembleContextRegions(options, workDir, hotContextFile, coldContextFile)
+	plan := computeBreakpoints(regions, options.SystemPrompt != "", options.HistoryPrefix != "", options.NoCache)
+
+	ttlFor := func(breakpoint bool) string {
+		if breakpoint {
+			return options.CacheTTL
+		}
+		return ""
+	}
+
+	entries := make([]RequestPlanEntry, 0, len(regions.Files)+3)
+	if options.SystemPrompt != "" {
+		entries = append(entries, RequestPlanEntry{Kind: RequestBlockSystem, Breakpoint: plan.System, TTL: ttlFor(plan.System)})
+	}
+	for i, f := range regions.Files {
+		kind := RequestBlockContext
+		if regions.Layout == CacheLayoutLadder && i < regions.LayerCount {
+			kind = RequestBlockLayer
+		}
+		entries = append(entries, RequestPlanEntry{Kind: kind, Path: f, Breakpoint: plan.Docs[i], TTL: ttlFor(plan.Docs[i])})
+	}
+	if options.HistoryPrefix != "" {
+		entries = append(entries, RequestPlanEntry{Kind: RequestBlockHistory, Breakpoint: plan.History, TTL: ttlFor(plan.History)})
+	}
+	// The per-turn prompt block is always emitted last and never cached.
+	entries = append(entries, RequestPlanEntry{Kind: RequestBlockTurn})
+	return entries, nil
 }
 
 // RequestRunner handles the orchestration of Anthropic API requests with context management
@@ -259,9 +327,53 @@ type UsageResult struct {
 	InputTokens         int64
 	OutputTokens        int64
 	CacheCreationTokens int64
-	CacheReadTokens     int64
-	EstimatedCostUSD    float64
-	KnownPricing        bool
+	// CacheWrite5m/CacheWrite1h split CacheCreationTokens by cache TTL (spec
+	// 19 D9 — ledger honesty: 1h writes bill at 2.0x the input rate, 5m at
+	// 1.25x). They come from the API's usage.cache_creation detail and always
+	// sum to CacheCreationTokens: when the API omits the detail (older
+	// responses), the flat total is attributed to the TTL this request asked
+	// for (see splitCacheWrites).
+	CacheWrite5m     int64
+	CacheWrite1h     int64
+	CacheReadTokens  int64
+	EstimatedCostUSD float64
+	KnownPricing     bool
+}
+
+// splitCacheWrites returns the 5m/1h split of a response's cache-write tokens.
+// Modern responses carry the split in usage.cache_creation; when both split
+// fields are zero while the flat cache_creation_input_tokens total is not, the
+// flat total is attributed to requestTTL — every breakpoint in a request
+// carries one TTL (spec 19 D2), and an empty TTL means the API default (5m).
+func splitCacheWrites(usage *sdk.BetaUsage, requestTTL string) (write5m, write1h int64) {
+	write5m = usage.CacheCreation.Ephemeral5mInputTokens
+	write1h = usage.CacheCreation.Ephemeral1hInputTokens
+	if write5m == 0 && write1h == 0 && usage.CacheCreationInputTokens > 0 {
+		if requestTTL == CacheTTL1h {
+			write1h = usage.CacheCreationInputTokens
+		} else {
+			write5m = usage.CacheCreationInputTokens
+		}
+	}
+	return write5m, write1h
+}
+
+// newUsageResult converts an API usage payload into a UsageResult, splitting
+// cache writes by TTL and pricing 1h writes at their 2.0x premium.
+func newUsageResult(model string, usage *sdk.BetaUsage, requestTTL string) *UsageResult {
+	write5m, write1h := splitCacheWrites(usage, requestTTL)
+	cost, known := logging.EstimateCostWithCacheSplitOK(model, usage.InputTokens, usage.OutputTokens, write5m, write1h, usage.CacheReadInputTokens)
+	return &UsageResult{
+		Model:               model,
+		InputTokens:         usage.InputTokens,
+		OutputTokens:        usage.OutputTokens,
+		CacheCreationTokens: usage.CacheCreationInputTokens,
+		CacheWrite5m:        write5m,
+		CacheWrite1h:        write1h,
+		CacheReadTokens:     usage.CacheReadInputTokens,
+		EstimatedCostUSD:    cost,
+		KnownPricing:        known,
+	}
 }
 
 // Run executes a request with the given options. It is a thin wrapper around
@@ -383,25 +495,9 @@ func (r *RequestRunner) RunWithUsage(ctx context.Context, options RequestOptions
 
 	// Calculate response time and cost for display
 	responseTime := time.Since(startTime)
-	var inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64
-	var estimatedCost float64
-	var knownPricing bool
 	var usageResult *UsageResult
 	if usage != nil {
-		inputTokens = usage.InputTokens
-		outputTokens = usage.OutputTokens
-		cacheCreationTokens = usage.CacheCreationInputTokens
-		cacheReadTokens = usage.CacheReadInputTokens
-		estimatedCost, knownPricing = logging.EstimateCostWithCacheOK(options.Model, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens)
-		usageResult = &UsageResult{
-			Model:               options.Model,
-			InputTokens:         inputTokens,
-			OutputTokens:        outputTokens,
-			CacheCreationTokens: cacheCreationTokens,
-			CacheReadTokens:     cacheReadTokens,
-			EstimatedCostUSD:    estimatedCost,
-			KnownPricing:        knownPricing,
-		}
+		usageResult = newUsageResult(options.Model, usage, options.CacheTTL)
 	}
 
 	if err != nil {
@@ -411,8 +507,8 @@ func (r *RequestRunner) RunWithUsage(ctx context.Context, options RequestOptions
 	}
 
 	// Display token usage
-	if usage != nil {
-		r.logger.TokenUsageCtx(ctx, int(inputTokens), int(outputTokens), int(cacheCreationTokens), int(cacheReadTokens), responseTime, estimatedCost)
+	if usageResult != nil {
+		r.logger.TokenUsageCtx(ctx, int(usageResult.InputTokens), int(usageResult.OutputTokens), int(usageResult.CacheCreationTokens), int(usageResult.CacheReadTokens), responseTime, usageResult.EstimatedCostUSD)
 	}
 
 	return response, usageResult, nil

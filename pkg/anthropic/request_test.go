@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	sdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/grovetools/grove-anthropic/pkg/logging"
 )
 
 // mkFile writes a small file under dir and returns its path.
@@ -19,13 +22,12 @@ func mkFile(t *testing.T, dir, name, content string) string {
 
 // legacyFixture is a representative on-disk layout for legacy assembly tests:
 // a workdir with CLAUDE.md, a non-empty cold-context file, a hot-context
-// file, plus pinned and caller context files.
+// file, plus caller context files.
 type legacyFixture struct {
 	workDir  string
 	claudeMD string
 	cold     string
 	hot      string
-	pinned   []string
 	contexts []string
 }
 
@@ -37,10 +39,6 @@ func newLegacyFixture(t *testing.T) legacyFixture {
 		claudeMD: mkFile(t, dir, "CLAUDE.md", "# instructions"),
 		cold:     mkFile(t, dir, "cached-context.xml", `<context><cold-context files="2">cold bytes</cold-context></context>`),
 		hot:      mkFile(t, dir, "context.xml", `<hot-context files="3">hot bytes</hot-context>`),
-		pinned: []string{
-			mkFile(t, dir, "pin1.md", "pin one"),
-			mkFile(t, dir, "pin2.md", "pin two"),
-		},
 		contexts: []string{
 			mkFile(t, dir, "extra.md", "extra context"),
 		},
@@ -48,22 +46,21 @@ func newLegacyFixture(t *testing.T) legacyFixture {
 }
 
 func TestAssembleContextRegions(t *testing.T) {
-	t.Run("legacy full ordering: cold, CLAUDE.md, pinned, hot, context", func(t *testing.T) {
+	t.Run("legacy full ordering: cold, CLAUDE.md, hot, context", func(t *testing.T) {
 		fx := newLegacyFixture(t)
 		regions := assembleContextRegions(RequestOptions{
-			PinnedFiles:  fx.pinned,
 			ContextFiles: fx.contexts,
 		}, fx.workDir, fx.hot, fx.cold)
 
-		wantFiles := []string{fx.cold, fx.claudeMD, fx.pinned[0], fx.pinned[1], fx.hot, fx.contexts[0]}
+		wantFiles := []string{fx.cold, fx.claudeMD, fx.hot, fx.contexts[0]}
 		if !reflect.DeepEqual(regions.Files, wantFiles) {
 			t.Errorf("Files = %v, want %v", regions.Files, wantFiles)
 		}
 		if regions.Layout != CacheLayoutLegacy {
 			t.Errorf("Layout = %q, want %q", regions.Layout, CacheLayoutLegacy)
 		}
-		if regions.StableCount != 2 || regions.PinnedCount != 2 {
-			t.Errorf("StableCount/PinnedCount = %d/%d, want 2/2", regions.StableCount, regions.PinnedCount)
+		if regions.StableCount != 2 {
+			t.Errorf("StableCount = %d, want 2", regions.StableCount)
 		}
 		if regions.LayerCount != 0 {
 			t.Errorf("LayerCount = %d, want 0 under legacy", regions.LayerCount)
@@ -95,26 +92,25 @@ func TestAssembleContextRegions(t *testing.T) {
 		if !reflect.DeepEqual(regions.Files, wantFiles) {
 			t.Errorf("Files = %v, want %v", regions.Files, wantFiles)
 		}
-		if regions.StableCount != 0 || regions.PinnedCount != 0 {
-			t.Errorf("StableCount/PinnedCount = %d/%d, want 0/0", regions.StableCount, regions.PinnedCount)
+		if regions.StableCount != 0 {
+			t.Errorf("StableCount = %d, want 0", regions.StableCount)
 		}
 	})
 
-	t.Run("legacy dedup precedence: stable > pinned > volatile", func(t *testing.T) {
+	t.Run("legacy dedup precedence: stable > volatile", func(t *testing.T) {
 		fx := newLegacyFixture(t)
 		regions := assembleContextRegions(RequestOptions{
-			// CLAUDE.md also passed as a pin, pin1 also passed as a context
-			// file: each stays in its earliest (most stable) channel.
-			PinnedFiles:  []string{fx.claudeMD, fx.pinned[0]},
-			ContextFiles: []string{fx.pinned[0], fx.contexts[0]},
+			// CLAUDE.md and the cold file also passed as context files: each
+			// stays in its earliest (most stable) channel.
+			ContextFiles: []string{fx.claudeMD, fx.cold, fx.contexts[0]},
 		}, fx.workDir, fx.hot, fx.cold)
 
-		wantFiles := []string{fx.cold, fx.claudeMD, fx.pinned[0], fx.hot, fx.contexts[0]}
+		wantFiles := []string{fx.cold, fx.claudeMD, fx.hot, fx.contexts[0]}
 		if !reflect.DeepEqual(regions.Files, wantFiles) {
 			t.Errorf("Files = %v, want %v", regions.Files, wantFiles)
 		}
-		if regions.StableCount != 2 || regions.PinnedCount != 1 {
-			t.Errorf("StableCount/PinnedCount = %d/%d, want 2/1", regions.StableCount, regions.PinnedCount)
+		if regions.StableCount != 2 {
+			t.Errorf("StableCount = %d, want 2", regions.StableCount)
 		}
 	})
 
@@ -126,7 +122,6 @@ func TestAssembleContextRegions(t *testing.T) {
 			CacheLayout:  CacheLayoutLadder,
 			LayerFiles:   []string{layer0, layer1},
 			ContextFiles: fx.contexts,
-			PinnedFiles:  fx.pinned, // deprecated: must be ignored under ladder
 		}, fx.workDir, fx.hot, fx.cold) // ...and are still excluded (D6)
 
 		wantFiles := []string{layer0, layer1, fx.contexts[0]}
@@ -139,8 +134,8 @@ func TestAssembleContextRegions(t *testing.T) {
 		if regions.LayerCount != 2 {
 			t.Errorf("LayerCount = %d, want 2", regions.LayerCount)
 		}
-		if regions.StableCount != 0 || regions.PinnedCount != 0 {
-			t.Errorf("StableCount/PinnedCount = %d/%d, want 0/0 under ladder", regions.StableCount, regions.PinnedCount)
+		if regions.StableCount != 0 {
+			t.Errorf("StableCount = %d, want 0 under ladder", regions.StableCount)
 		}
 	})
 
@@ -173,8 +168,8 @@ func TestAssembleContextRegions(t *testing.T) {
 
 	t.Run("empty CacheLayout defaults to legacy", func(t *testing.T) {
 		fx := newLegacyFixture(t)
-		got := assembleContextRegions(RequestOptions{PinnedFiles: fx.pinned, ContextFiles: fx.contexts}, fx.workDir, fx.hot, fx.cold)
-		want := assembleContextRegions(RequestOptions{CacheLayout: CacheLayoutLegacy, PinnedFiles: fx.pinned, ContextFiles: fx.contexts}, fx.workDir, fx.hot, fx.cold)
+		got := assembleContextRegions(RequestOptions{ContextFiles: fx.contexts}, fx.workDir, fx.hot, fx.cold)
+		want := assembleContextRegions(RequestOptions{CacheLayout: CacheLayoutLegacy, ContextFiles: fx.contexts}, fx.workDir, fx.hot, fx.cold)
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("empty layout %+v != explicit legacy %+v", got, want)
 		}
@@ -203,5 +198,157 @@ func TestValidateCacheOptions(t *testing.T) {
 		if err := o.validateCacheOptions(); err == nil {
 			t.Errorf("validateCacheOptions(%+v) = nil, want error", o)
 		}
+	}
+}
+
+// fakeBetaUsage builds an SDK usage payload for split-extraction tests.
+func fakeBetaUsage(input, output, flatCreation, read, w5m, w1h int64) *sdk.BetaUsage {
+	u := &sdk.BetaUsage{
+		InputTokens:              input,
+		OutputTokens:             output,
+		CacheCreationInputTokens: flatCreation,
+		CacheReadInputTokens:     read,
+	}
+	u.CacheCreation.Ephemeral5mInputTokens = w5m
+	u.CacheCreation.Ephemeral1hInputTokens = w1h
+	return u
+}
+
+// TestSplitCacheWrites covers the 5m/1h extraction from the API's
+// usage.cache_creation detail plus the flat-total fallback for responses that
+// omit the split (spec 19 D9).
+func TestSplitCacheWrites(t *testing.T) {
+	tests := []struct {
+		name           string
+		usage          *sdk.BetaUsage
+		requestTTL     string
+		want5m, want1h int64
+	}{
+		{"split present: passed through", fakeBetaUsage(10, 5, 1000, 200, 400, 600), CacheTTL1h, 400, 600},
+		{"split present, 5m only", fakeBetaUsage(10, 5, 700, 0, 700, 0), "", 700, 0},
+		{"no split, request asked 1h: flat → 1h", fakeBetaUsage(10, 5, 900, 0, 0, 0), CacheTTL1h, 0, 900},
+		{"no split, request asked 5m: flat → 5m", fakeBetaUsage(10, 5, 900, 0, 0, 0), CacheTTL5m, 900, 0},
+		{"no split, empty TTL (API default 5m): flat → 5m", fakeBetaUsage(10, 5, 900, 0, 0, 0), "", 900, 0},
+		{"nothing written", fakeBetaUsage(10, 5, 0, 300, 0, 0), CacheTTL1h, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got5m, got1h := splitCacheWrites(tt.usage, tt.requestTTL)
+			if got5m != tt.want5m || got1h != tt.want1h {
+				t.Errorf("splitCacheWrites() = (%d, %d), want (%d, %d)", got5m, got1h, tt.want5m, tt.want1h)
+			}
+		})
+	}
+}
+
+// TestNewUsageResult asserts the UsageResult carries the split AND prices 1h
+// writes at 2.0x the input rate (vs 1.25x for 5m) — the D9 ledger-honesty fix.
+func TestNewUsageResult(t *testing.T) {
+	const model = "claude-fable-5" // $10/MTok in, $50/MTok out (known pricing)
+	u := fakeBetaUsage(100_000, 10_000, 1_000_000, 500_000, 400_000, 600_000)
+
+	got := newUsageResult(model, u, CacheTTL1h)
+	if got.CacheWrite5m != 400_000 || got.CacheWrite1h != 600_000 {
+		t.Errorf("split = (%d, %d), want (400000, 600000)", got.CacheWrite5m, got.CacheWrite1h)
+	}
+	if got.CacheCreationTokens != 1_000_000 {
+		t.Errorf("CacheCreationTokens = %d, want 1000000 (flat total kept)", got.CacheCreationTokens)
+	}
+	if !got.KnownPricing {
+		t.Errorf("KnownPricing = false, want true for %s", model)
+	}
+	want := logging.EstimateCostWithCacheSplit(model, 100_000, 10_000, 400_000, 600_000, 500_000)
+	if got.EstimatedCostUSD != want {
+		t.Errorf("EstimatedCostUSD = %v, want %v", got.EstimatedCostUSD, want)
+	}
+
+	// The same tokens priced as all-5m must be strictly cheaper than the real
+	// split — i.e. the 2x 1h premium is actually applied.
+	all5m := logging.EstimateCostWithCacheSplit(model, 100_000, 10_000, 1_000_000, 0, 500_000)
+	if got.EstimatedCostUSD <= all5m {
+		t.Errorf("split cost %v not greater than all-5m cost %v — 1h premium not applied", got.EstimatedCostUSD, all5m)
+	}
+}
+
+// TestDescribeRequestLadder pins the manifest-facing block plan for a ladder
+// request: system → layers (breakpoint+TTL on the last) → context docs →
+// history (breakpoint) → turn (never cached).
+func TestDescribeRequestLadder(t *testing.T) {
+	dir := t.TempDir()
+	layer0 := mkFile(t, dir, "00-base.xml", "layer zero")
+	layer1 := mkFile(t, dir, "01-add.xml", "layer one")
+	extra := mkFile(t, dir, "extra.md", "x")
+
+	entries, err := DescribeRequest(RequestOptions{
+		Model:         "claude-test",
+		Prompt:        "turn K",
+		SystemPrompt:  "template",
+		HistoryPrefix: "turns 1..K-1",
+		WorkDir:       dir,
+		CacheLayout:   CacheLayoutLadder,
+		CacheTTL:      CacheTTL1h,
+		LayerFiles:    []string{layer0, layer1},
+		ContextFiles:  []string{extra},
+	})
+	if err != nil {
+		t.Fatalf("DescribeRequest: %v", err)
+	}
+
+	want := []RequestPlanEntry{
+		{Kind: RequestBlockSystem, Breakpoint: true, TTL: CacheTTL1h},
+		{Kind: RequestBlockLayer, Path: layer0},
+		{Kind: RequestBlockLayer, Path: layer1, Breakpoint: true, TTL: CacheTTL1h},
+		{Kind: RequestBlockContext, Path: extra},
+		{Kind: RequestBlockHistory, Breakpoint: true, TTL: CacheTTL1h},
+		{Kind: RequestBlockTurn},
+	}
+	if !reflect.DeepEqual(entries, want) {
+		t.Errorf("entries = %+v\nwant %+v", entries, want)
+	}
+
+	// No system/history (the P2 flow chat shape): single breakpoint on the
+	// last layer; turn always last.
+	entries, err = DescribeRequest(RequestOptions{
+		Model:       "claude-test",
+		Prompt:      "turn K",
+		WorkDir:     dir,
+		CacheLayout: CacheLayoutLadder,
+		CacheTTL:    CacheTTL1h,
+		LayerFiles:  []string{layer0, layer1},
+	})
+	if err != nil {
+		t.Fatalf("DescribeRequest: %v", err)
+	}
+	want = []RequestPlanEntry{
+		{Kind: RequestBlockLayer, Path: layer0},
+		{Kind: RequestBlockLayer, Path: layer1, Breakpoint: true, TTL: CacheTTL1h},
+		{Kind: RequestBlockTurn},
+	}
+	if !reflect.DeepEqual(entries, want) {
+		t.Errorf("entries = %+v\nwant %+v", entries, want)
+	}
+
+	// NoCache: zero breakpoints, no TTLs, same block order.
+	entries, err = DescribeRequest(RequestOptions{
+		Model:       "claude-test",
+		Prompt:      "turn K",
+		WorkDir:     dir,
+		CacheLayout: CacheLayoutLadder,
+		CacheTTL:    CacheTTL1h,
+		NoCache:     true,
+		LayerFiles:  []string{layer0, layer1},
+	})
+	if err != nil {
+		t.Fatalf("DescribeRequest: %v", err)
+	}
+	for _, e := range entries {
+		if e.Breakpoint || e.TTL != "" {
+			t.Errorf("NoCache entry carries breakpoint/TTL: %+v", e)
+		}
+	}
+
+	// Invalid options are rejected exactly like the live path.
+	if _, err := DescribeRequest(RequestOptions{Prompt: "x", CacheTTL: "2h"}); err == nil {
+		t.Error("DescribeRequest with invalid CacheTTL = nil error, want error")
 	}
 }

@@ -21,17 +21,23 @@ type QueryLog struct {
 	InputTokens         int64     `json:"input_tokens"`
 	OutputTokens        int64     `json:"output_tokens"`
 	CacheCreationTokens int64     `json:"cache_creation_tokens"`
-	CacheReadTokens     int64     `json:"cache_read_tokens"`
-	CacheHitRate        float64   `json:"cache_hit_rate"`
-	ResponseTime        float64   `json:"response_time_seconds"`
-	EstimatedCost       float64   `json:"estimated_cost_usd"`
-	Error               string    `json:"error,omitempty"`
-	Success             bool      `json:"success"`
-	WorkingDir          string    `json:"working_dir,omitempty"`
-	GitRepo             string    `json:"git_repo,omitempty"`
-	GitBranch           string    `json:"git_branch,omitempty"`
-	GitCommit           string    `json:"git_commit,omitempty"`
-	Caller              string    `json:"caller,omitempty"`
+	// CacheWrite5mTokens/CacheWrite1hTokens split CacheCreationTokens by cache
+	// TTL (spec 19 D9 — ledger honesty: 1h writes bill at 2.0x the input rate,
+	// 5m at 1.25x). They sum to CacheCreationTokens, which is kept for
+	// compatibility with existing ledger consumers.
+	CacheWrite5mTokens int64   `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens int64   `json:"cache_write_1h_tokens,omitempty"`
+	CacheReadTokens    int64   `json:"cache_read_tokens"`
+	CacheHitRate       float64 `json:"cache_hit_rate"`
+	ResponseTime       float64 `json:"response_time_seconds"`
+	EstimatedCost      float64 `json:"estimated_cost_usd"`
+	Error              string  `json:"error,omitempty"`
+	Success            bool    `json:"success"`
+	WorkingDir         string  `json:"working_dir,omitempty"`
+	GitRepo            string  `json:"git_repo,omitempty"`
+	GitBranch          string  `json:"git_branch,omitempty"`
+	GitCommit          string  `json:"git_commit,omitempty"`
+	Caller             string  `json:"caller,omitempty"`
 }
 
 // QueryLogger handles logging API queries to a file
@@ -133,22 +139,37 @@ func EstimateCostWithCache(model string, inputTokens, outputTokens, cacheCreatio
 }
 
 // EstimateCostWithCacheOK calculates the estimated cost including Anthropic
-// prompt caching and reports whether the model's price was found in the model
-// table (knownPricing=false means the 3/15 default was used, so the cost is a
-// rough estimate). Anthropic bills cache-write tokens at 1.25x the input price
-// and cache-read tokens at 0.10x the input price; regular InputTokens already
-// exclude cached tokens, so the three input tiers sum without double-counting.
-//
-// The 1.25x/0.10x multipliers are for 5m ephemeral caching, the only cache mode
-// grove's callers currently set. 1h caching carries a different (2x write)
-// premium and would need revisiting here if adopted.
+// prompt caching, treating ALL cache-write tokens as 5m-TTL writes (1.25x).
+// Callers that know the 5m/1h split (from the API's usage.cache_creation
+// detail) must use EstimateCostWithCacheSplitOK instead — a 1h write bills at
+// 2.0x, so lumping it in here under-prices it (spec 19 D9).
 func EstimateCostWithCacheOK(model string, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens int64) (cost float64, knownPricing bool) {
+	return EstimateCostWithCacheSplitOK(model, inputTokens, outputTokens, cacheCreationTokens, 0, cacheReadTokens)
+}
+
+// EstimateCostWithCacheSplit is EstimateCostWithCacheSplitOK without the
+// known-pricing flag, for callers that only need the cost.
+func EstimateCostWithCacheSplit(model string, inputTokens, outputTokens, cacheWrite5m, cacheWrite1h, cacheReadTokens int64) float64 {
+	cost, _ := EstimateCostWithCacheSplitOK(model, inputTokens, outputTokens, cacheWrite5m, cacheWrite1h, cacheReadTokens)
+	return cost
+}
+
+// EstimateCostWithCacheSplitOK calculates the estimated cost including
+// Anthropic prompt caching with the cache-write tokens split by TTL, and
+// reports whether the model's price was found in the model table
+// (knownPricing=false means the 3/15 default was used, so the cost is a rough
+// estimate). Anthropic bills 5m-TTL cache writes at 1.25x the input price,
+// 1h-TTL cache writes at 2.0x (spec 19 D2/D9), and cache reads at 0.10x;
+// regular InputTokens already exclude cached tokens, so the input tiers sum
+// without double-counting.
+func EstimateCostWithCacheSplitOK(model string, inputTokens, outputTokens, cacheWrite5m, cacheWrite1h, cacheReadTokens int64) (cost float64, knownPricing bool) {
 	inputPrice, outputPrice, known := modelPrices(model, inputTokens)
 
 	inputCost := (float64(inputTokens) / 1_000_000) * inputPrice
-	cacheCreationCost := (float64(cacheCreationTokens) / 1_000_000) * inputPrice * 1.25
+	cacheWrite5mCost := (float64(cacheWrite5m) / 1_000_000) * inputPrice * 1.25
+	cacheWrite1hCost := (float64(cacheWrite1h) / 1_000_000) * inputPrice * 2.0
 	cacheReadCost := (float64(cacheReadTokens) / 1_000_000) * inputPrice * 0.10
 	outputCost := (float64(outputTokens) / 1_000_000) * outputPrice
 
-	return inputCost + cacheCreationCost + cacheReadCost + outputCost, known
+	return inputCost + cacheWrite5mCost + cacheWrite1hCost + cacheReadCost + outputCost, known
 }

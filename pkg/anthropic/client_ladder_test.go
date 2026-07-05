@@ -91,40 +91,39 @@ func TestComputeBreakpointsBudget(t *testing.T) {
 			}
 		}
 	}
-	// Legacy budget: never marks system/history, docs capped at 3.
+	// Legacy budget: never marks system/history, docs capped at 2.
 	for total := 0; total <= 6; total++ {
 		for stable := 0; stable <= total; stable++ {
-			for pinned := 0; pinned <= total-stable; pinned++ {
-				regions := ContextRegions{Layout: CacheLayoutLegacy, Files: make([]string, total), StableCount: stable, PinnedCount: pinned}
-				plan := computeBreakpoints(regions, true, true, false)
-				if plan.System || plan.History {
-					t.Errorf("legacy total=%d: system/history breakpoints must never be set (got %v/%v)", total, plan.System, plan.History)
-				}
-				if plan.count() > 3 {
-					t.Errorf("legacy total=%d stable=%d pinned=%d: %d breakpoints (>3)", total, stable, pinned, plan.count())
-				}
+			regions := ContextRegions{Layout: CacheLayoutLegacy, Files: make([]string, total), StableCount: stable}
+			plan := computeBreakpoints(regions, true, true, false)
+			if plan.System || plan.History {
+				t.Errorf("legacy total=%d: system/history breakpoints must never be set (got %v/%v)", total, plan.System, plan.History)
+			}
+			if plan.count() > 2 {
+				t.Errorf("legacy total=%d stable=%d: %d breakpoints (>2)", total, stable, plan.count())
 			}
 		}
 	}
 }
 
 // TestComputeBreakpointsLegacyMatchesHistorical pins the legacy plan to the
-// historical cacheBreakpointIndices output for representative shapes.
+// historical (pinned-free) cacheBreakpointIndices output for representative
+// shapes.
 func TestComputeBreakpointsLegacyMatchesHistorical(t *testing.T) {
 	shapes := []struct {
-		total, stable, pinned int
-		noCache               bool
+		total, stable int
+		noCache       bool
 	}{
-		{5, 2, 0, false},
-		{6, 2, 2, false},
-		{4, 0, 0, false},
-		{6, 2, 2, true},
-		{0, 0, 0, false},
+		{5, 2, false},
+		{6, 2, false},
+		{4, 0, false},
+		{6, 2, true},
+		{0, 0, false},
 	}
 	for _, s := range shapes {
-		regions := ContextRegions{Layout: CacheLayoutLegacy, Files: make([]string, s.total), StableCount: s.stable, PinnedCount: s.pinned}
+		regions := ContextRegions{Layout: CacheLayoutLegacy, Files: make([]string, s.total), StableCount: s.stable}
 		plan := computeBreakpoints(regions, true, false, s.noCache)
-		want := cacheBreakpointIndices(s.total, s.stable, s.pinned, s.noCache)
+		want := cacheBreakpointIndices(s.total, s.stable, s.noCache)
 		if !equalInts(indices(plan.Docs), indices(want)) {
 			t.Errorf("shape %+v: Docs = %v, want historical %v", s, indices(plan.Docs), indices(want))
 		}
@@ -256,10 +255,12 @@ func TestBuildMessageParamsLadderShape(t *testing.T) {
 
 // TestLegacyLayoutByteIdentity is the regression guard required by spec 19
 // §8: for representative legacy inputs, buildMessageParams must serialize
-// byte-identically to what today's (pre-ladder) code produced — same file
-// order, same breakpoint indices, cache_control params with no ttl. The
-// reference is constructed inline exactly the way client.go built requests
-// before this change.
+// byte-identically to what the historical pinned-free code produced — same
+// file order, same two-breakpoint set {stableCount-1, total-1}, cache_control
+// params with no ttl. The reference is constructed inline exactly the way
+// client.go built requests before the ladder/pinned changes ("legacy
+// byte-identity" now means the pinned-free legacy caller — the pinned region
+// was removed entirely in P2, D5).
 func TestLegacyLayoutByteIdentity(t *testing.T) {
 	const (
 		model        = "claude-test"
@@ -267,13 +268,18 @@ func TestLegacyLayoutByteIdentity(t *testing.T) {
 		systemPrompt = "system instructions"
 		maxTokens    = int64(4096)
 	)
-	fileIDs := []string{"id-cold", "id-claude", "id-pin1", "id-pin2", "id-hot", "id-extra"}
-	stableCount, pinnedCount := 2, 2
+	fileIDs := []string{"id-cold", "id-claude", "id-hot", "id-extra"}
+	stableCount := 2
 
-	// --- reference: today's construction, verbatim from pre-change client.go ---
+	// --- reference: the historical construction, verbatim from the pinned-free
+	// pre-change client.go ---
 	buildReference := func(noCache bool) anthropic.BetaMessageNewParams {
 		contentBlocks := make([]anthropic.BetaContentBlockParamUnion, 0, 1+len(fileIDs))
-		breakpoints := cacheBreakpointIndices(len(fileIDs), stableCount, pinnedCount, noCache)
+		breakpoints := map[int]bool{}
+		if !noCache {
+			breakpoints[stableCount-1] = true
+			breakpoints[len(fileIDs)-1] = true
+		}
 		for i, id := range fileIDs {
 			blk := anthropic.NewBetaDocumentBlock(anthropic.BetaFileDocumentSourceParam{FileID: id})
 			if breakpoints[i] {
@@ -303,7 +309,6 @@ func TestLegacyLayoutByteIdentity(t *testing.T) {
 				Layout:      CacheLayoutLegacy,
 				Files:       make([]string, len(fileIDs)),
 				StableCount: stableCount,
-				PinnedCount: pinnedCount,
 			},
 			MaxTokens: maxTokens,
 			NoCache:   noCache,
@@ -323,14 +328,14 @@ func TestLegacyLayoutByteIdentity(t *testing.T) {
 	}
 
 	// Explicit pins on the expectations, so a drift in the reference builder
-	// itself also fails loudly: breakpoints at {1,3,5}, no ttl anywhere.
+	// itself also fails loudly: breakpoints at {1,3}, no ttl anywhere.
 	req := GenerateRequest{
 		Model: model, Prompt: prompt, SystemPrompt: systemPrompt, MaxTokens: maxTokens,
-		Regions: ContextRegions{Layout: CacheLayoutLegacy, Files: make([]string, len(fileIDs)), StableCount: stableCount, PinnedCount: pinnedCount},
+		Regions: ContextRegions{Layout: CacheLayoutLegacy, Files: make([]string, len(fileIDs)), StableCount: stableCount},
 	}
 	plan := computeBreakpoints(req.Regions, true, false, false)
-	if !equalInts(indices(plan.Docs), []int{1, 3, 5}) {
-		t.Errorf("legacy breakpoint indices = %v, want [1 3 5]", indices(plan.Docs))
+	if !equalInts(indices(plan.Docs), []int{1, 3}) {
+		t.Errorf("legacy breakpoint indices = %v, want [1 3]", indices(plan.Docs))
 	}
 	if plan.System || plan.History {
 		t.Errorf("legacy layout must not mark system/history breakpoints")
@@ -342,27 +347,24 @@ func TestLegacyLayoutByteIdentity(t *testing.T) {
 	if strings.Contains(string(raw), `"ttl"`) {
 		t.Errorf("legacy request with empty CacheTTL serialized a ttl field: %s", raw)
 	}
-	if got, want := strings.Count(string(raw), `"cache_control"`), 3; got != want {
+	if got, want := strings.Count(string(raw), `"cache_control"`), 2; got != want {
 		t.Errorf("legacy cache_control count = %d, want %d", got, want)
 	}
 }
 
 // TestLegacyAssemblyByteIdentity pins the legacy file ORDER end to end: the
 // assembled order for a representative legacy RequestOptions must be exactly
-// cold, CLAUDE.md, pins (declared order), hot, context files — what today's
-// code uploads.
+// cold, CLAUDE.md, hot, context files — what the pinned-free code uploads.
 func TestLegacyAssemblyByteIdentity(t *testing.T) {
 	fx := newLegacyFixture(t)
 	regions := assembleContextRegions(RequestOptions{
-		PinnedFiles:  fx.pinned,
 		ContextFiles: fx.contexts,
 	}, fx.workDir, fx.hot, fx.cold)
 
 	want := ContextRegions{
 		Layout:      CacheLayoutLegacy,
-		Files:       []string{fx.cold, fx.claudeMD, fx.pinned[0], fx.pinned[1], fx.hot, fx.contexts[0]},
+		Files:       []string{fx.cold, fx.claudeMD, fx.hot, fx.contexts[0]},
 		StableCount: 2,
-		PinnedCount: 2,
 	}
 	if !equalRegions(regions, want) {
 		t.Errorf("regions = %+v, want %+v", regions, want)
@@ -370,7 +372,7 @@ func TestLegacyAssemblyByteIdentity(t *testing.T) {
 }
 
 func equalRegions(a, b ContextRegions) bool {
-	if a.Layout != b.Layout || a.StableCount != b.StableCount || a.PinnedCount != b.PinnedCount || a.LayerCount != b.LayerCount {
+	if a.Layout != b.Layout || a.StableCount != b.StableCount || a.LayerCount != b.LayerCount {
 		return false
 	}
 	if len(a.Files) != len(b.Files) {

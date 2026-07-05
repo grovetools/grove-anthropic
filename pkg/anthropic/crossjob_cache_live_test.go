@@ -4,10 +4,21 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// writeFile writes a live-test fixture file and returns its path.
+func writeFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", name, err)
+	}
+	return p
+}
 
 // TestCrossJobCachePrefixSharingLive is the P0 live probe for spec
 // plans/oracle-plays/19-spec-cache-fixes.md — it gates decision D8
@@ -34,8 +45,7 @@ import (
 // not matter (verified live in job 16).
 //
 // Gated on GROVE_ANTHROPIC_LIVE_CACHE_TEST=1; `go test ./...` skips it. The
-// API key resolves via config.ResolveAPIKey (grove keys.toml), same as the
-// pinned-cache live test. To run:
+// API key resolves via config.ResolveAPIKey (grove keys.toml). To run:
 //
 //	GROVE_ANTHROPIC_LIVE_CACHE_TEST=1 \
 //	  go test ./pkg/anthropic -run TestCrossJobCachePrefixSharingLive -v -count=1

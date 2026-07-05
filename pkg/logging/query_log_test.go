@@ -111,3 +111,31 @@ func TestPricingDriftGuard(t *testing.T) {
 		}
 	}
 }
+
+// TestEstimateCostWithCacheSplitOK verifies the TTL-split write multipliers
+// (1.25x for 5m, 2.0x for 1h — spec 19 D9) and that the flat-total wrapper
+// prices everything at the 5m rate.
+func TestEstimateCostWithCacheSplitOK(t *testing.T) {
+	// haiku-4-5: input 1.00 / output 5.00 per Mtok. 1M of each class:
+	//   input 1.00 + write5m 1.25 + write1h 2.00 + cacheRead 0.10 + output 5.00 = 9.35
+	cost, known := EstimateCostWithCacheSplitOK("claude-haiku-4-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+	if !floatEq(cost, 9.35) {
+		t.Errorf("split cost = %v; want 9.35", cost)
+	}
+	if !known {
+		t.Errorf("haiku-4-5 should be known-priced")
+	}
+
+	// All-1h writes at 2.0x: 1.00 input + 2.00 write1h = 3.00.
+	cost, _ = EstimateCostWithCacheSplitOK("claude-haiku-4-5", 1_000_000, 0, 0, 1_000_000, 0)
+	if !floatEq(cost, 3.00) {
+		t.Errorf("1h-write cost = %v; want 3.00", cost)
+	}
+
+	// The flat wrapper must equal the split call with everything in the 5m bucket.
+	flat, _ := EstimateCostWithCacheOK("claude-haiku-4-5", 10, 20, 30, 40)
+	split, _ := EstimateCostWithCacheSplitOK("claude-haiku-4-5", 10, 20, 30, 0, 40)
+	if !floatEq(flat, split) {
+		t.Errorf("EstimateCostWithCacheOK (%v) != all-5m split (%v)", flat, split)
+	}
+}
