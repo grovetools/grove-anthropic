@@ -62,6 +62,15 @@ func Models() []Model {
 			Legacy:   false,
 		},
 		{
+			ID:       "claude-sonnet-5",
+			Alias:    "claude-sonnet-5",
+			Provider: "Anthropic",
+			Note:     "Sonnet 5 - best combination of speed and intelligence, near-Opus coding/agentic quality (intro pricing $2/$10 per MTok through 2026-08-31)",
+			Input:    3.00,
+			Output:   15.00,
+			Legacy:   false,
+		},
+		{
 			ID:       "claude-sonnet-4-6-20260115",
 			Alias:    "claude-sonnet-4-6",
 			Provider: "Anthropic",

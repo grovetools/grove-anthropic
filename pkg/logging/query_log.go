@@ -112,12 +112,14 @@ func (ql *QueryLogger) Log(entry QueryLog) error {
 func modelPrices(model string, inputTokens int64) (inputPrice, outputPrice float64, knownPricing bool) {
 	inputPrice, outputPrice, knownPricing = models.GetPricingOK(model)
 
-	// Sole remaining special case: Sonnet long-context pricing (Sonnet ≥3.7
-	// bills input at 6.00 / output at 22.50 above LongContextThreshold input
-	// tokens). Applied on top of the table base rate so it survives both the
-	// exact and family-substring lookups for any dated Sonnet snapshot.
+	// Sole remaining special case: Sonnet 4.x long-context pricing (bills input
+	// at 6.00 / output at 22.50 above LongContextThreshold input tokens).
+	// Applied on top of the table base rate so it survives both the exact and
+	// family-substring lookups for any dated Sonnet snapshot. Scoped to
+	// "sonnet-4" so newer generations (Sonnet 5 prices flat $3/$15 across its
+	// 1M window) don't silently inherit the surcharge.
 	resolved := models.ResolveAlias(model)
-	if strings.Contains(resolved, "sonnet") && inputTokens > models.LongContextThreshold {
+	if strings.Contains(resolved, "sonnet-4") && inputTokens > models.LongContextThreshold {
 		inputPrice = 6.00
 		outputPrice = 22.50
 	}

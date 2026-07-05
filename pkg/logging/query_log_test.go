@@ -45,6 +45,9 @@ func TestModelPrices(t *testing.T) {
 		{"future sonnet snapshot long context", "claude-sonnet-4-6-20991231", aboveThreshold, 6.00, 22.50, true},
 		// Non-Sonnet models are unaffected by the input-token count.
 		{"opus-4-8 large input", "claude-opus-4-8", aboveThreshold, 5.00, 25.00, true},
+		// Sonnet 5 prices flat ($3/$15, 1M window) — the sonnet-4 long-context
+		// tier must not apply to it.
+		{"sonnet-5 long context stays flat", "claude-sonnet-5", aboveThreshold, 3.00, 15.00, true},
 	}
 
 	for _, tc := range cases {
