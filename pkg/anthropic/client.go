@@ -71,7 +71,8 @@ type GenerateRequest struct {
 // The API allows at most 4 per request, counting a system-prompt breakpoint;
 // both layouts stay within budget: legacy places up to 2 document breakpoints
 // (System/History are never set), ladder places up to 3 total (system + last
-// layer document + history block), keeping one spare.
+// layer document + history block) plus an optional 4th on the lineage boundary
+// when an inherited lineage prefix is present (K1) — exactly the API's 4.
 type breakpointPlan struct {
 	System bool // breakpoint on the system prompt block (ladder/stream)
 	// Docs holds breakpoint positions. Under legacy/ladder it indexes document
@@ -102,7 +103,10 @@ func (p breakpointPlan) count() int {
 // no breakpoint of their own), and the LAST HistoryBlocks text block (BP3 —
 // one breakpoint covers the whole append-only history region; earlier turns'
 // save points from previous requests remain valid read points). The Prompt
-// block is never cached. Max 3 of the API's 4, one spare.
+// block is never cached. Base ladder spends 3 of the API's 4; the 4th slot is
+// claimed by the lineage-boundary breakpoint (K1) when an inherited-lineage
+// prefix is present (0 < LineageCount < LayerCount) — non-lineage chats keep
+// today's 3 and stay byte-identical.
 //
 // Legacy: exactly the historical cacheBreakpointIndices document set; the
 // system prompt and history block never carry breakpoints, preserving
@@ -123,6 +127,15 @@ func computeBreakpoints(regions ContextRegions, hasSystem, hasHistory, noCache b
 		if regions.HeadAnchor >= 0 {
 			plan.Docs[regions.HeadAnchor] = true
 		}
+		// Lineage-boundary breakpoint (K1), mirrored from the ladder branch so
+		// the stream-at-head byte-identity contract still holds when an inherited
+		// lineage prefix is present. Under stream-at-head the lineage layers are
+		// the leading items, so the boundary lands on Items[LineageCount-1]. Only
+		// when it is a STRICT prefix of the head layers (LineageCount-1 <
+		// HeadAnchor) — otherwise it coincides with HeadAnchor's BP2.
+		if regions.LineageCount > 0 && regions.LineageCount-1 < regions.HeadAnchor {
+			plan.Docs[regions.LineageCount-1] = true
+		}
 		lastStored := -1
 		for i, it := range regions.Items {
 			if it.Kind == RequestBlockLayer || it.Kind == RequestBlockHistory {
@@ -138,6 +151,15 @@ func computeBreakpoints(regions ContextRegions, hasSystem, hasHistory, noCache b
 		plan.System = hasSystem
 		if regions.LayerCount > 0 {
 			plan.Docs[regions.LayerCount-1] = true
+		}
+		// Lineage-boundary breakpoint (K1): put a save point at the tail of the
+		// inherited-lineage prefix so sibling chats that share it cache-READ that
+		// region instead of re-writing it. Only when lineage is a STRICT prefix of
+		// the layers — when lineage IS all layers the boundary coincides with the
+		// last-layer breakpoint above and the guard leaves that single BP to cover
+		// it (so the second assignment never runs and non-lineage chats keep 3).
+		if regions.LineageCount > 0 && regions.LineageCount < regions.LayerCount {
+			plan.Docs[regions.LineageCount-1] = true
 		}
 		plan.History = hasHistory
 		return plan

@@ -76,6 +76,18 @@ type RequestOptions struct {
 	// as given (never sorted): byte/position stability across turns is what
 	// keeps the layer prefix cached. Ignored under the legacy layout.
 	LayerFiles []string
+	// LineageLayerCount is the number of LEADING layer entries (in LayerFiles
+	// under ladder, or in Stream under stream) that were sourced from an
+	// inherited parent lineage or dep-transcript — a contiguous prefix (K1,
+	// oracle-plays/41). When 0 < LineageLayerCount < the total layer count, a
+	// cache breakpoint is placed on the LAST lineage layer so sibling chats that
+	// inherit the same lineage prefix cache-READ that region instead of
+	// re-writing it (see computeBreakpoints). The count is a leading run only:
+	// lineage integrated mid-chat on a later turn lands mid-payload and
+	// deliberately gets no boundary. Callers must exclude worktree-time-varying
+	// layers (e.g. the auto lineage git-delta) from this count, since those
+	// bytes differ per sibling. Ignored under the legacy layout.
+	LineageLayerCount int
 	// HistoryBlocks is the byte-stable dialogue history (turns 1…K−1, spec 19
 	// D7): ONE text block per completed prior turn, emitted in caller order
 	// immediately before the volatile Prompt block. Under the ladder layout
@@ -183,6 +195,15 @@ type ContextRegions struct {
 	Files       []string
 	StableCount int // legacy only: cold-context + CLAUDE.md prefix length
 	LayerCount  int // ladder only: layer-document prefix length
+	// LineageCount is the length of the leading lineage-sourced layer prefix
+	// (K1, oracle-plays/41), after dedupe. Under ladder it indexes Files (the
+	// last lineage layer is Files[LineageCount-1]); under stream it indexes
+	// Items (the last lineage layer is Items[LineageCount-1]). computeBreakpoints
+	// places the lineage-boundary breakpoint there when 0 < LineageCount and the
+	// boundary is a STRICT prefix of the layers (so it does not coincide with the
+	// last-layer/HeadAnchor breakpoint). 0 ⇒ no lineage prefix ⇒ no boundary
+	// breakpoint, keeping non-lineage chats byte-identical.
+	LineageCount int
 	// Items and HeadAnchor describe the stream layout (spec 27), valid only
 	// when Layout == CacheLayoutStream. Items is the ordered heterogeneous
 	// block sequence (layer/context documents + history text blocks);
@@ -229,7 +250,8 @@ func assembleContextRegions(options RequestOptions, workDir, hotContextFile, col
 		// keep the first occurrence, drop later dupes. History items always
 		// pass through untouched.
 		items := make([]StreamItem, 0, len(options.Stream))
-		for _, it := range options.Stream {
+		lineageCount := 0
+		for i, it := range options.Stream {
 			if it.Path != "" {
 				absPath, err := filepath.Abs(it.Path)
 				if err != nil {
@@ -241,6 +263,12 @@ func assembleContextRegions(options RequestOptions, workDir, hotContextFile, col
 				seen[absPath] = true
 			}
 			items = append(items, it)
+			// A surviving item drawn from the leading lineage run (K1) extends the
+			// lineage prefix; deduped-away lineage items are correctly skipped so
+			// LineageCount always indexes a real, present item.
+			if i < options.LineageLayerCount {
+				lineageCount++
+			}
 		}
 		// HeadAnchor = index of the last layer item preceding the first history
 		// item (or the last layer item overall when there is no history). This
@@ -263,24 +291,35 @@ func assembleContextRegions(options RequestOptions, workDir, hotContextFile, col
 			}
 		}
 		return ContextRegions{
-			Layout:     CacheLayoutStream,
-			Items:      items,
-			HeadAnchor: headAnchor,
+			Layout:       CacheLayoutStream,
+			Items:        items,
+			HeadAnchor:   headAnchor,
+			LineageCount: lineageCount,
 		}
 	}
 
 	if options.effectiveCacheLayout() == CacheLayoutLadder {
 		var layerFiles, contextFiles []string
-		for _, f := range options.LayerFiles {
+		lineageCount := 0
+		for i, f := range options.LayerFiles {
+			before := len(layerFiles)
 			addFile(&layerFiles, f)
+			// A surviving layer drawn from the leading lineage run (indices <
+			// LineageLayerCount) extends the lineage prefix (K1). Deduped-away
+			// lineage paths are not counted, so LineageCount stays clamped to the
+			// deduped layer list and the boundary always lands on a present doc.
+			if len(layerFiles) > before && i < options.LineageLayerCount {
+				lineageCount++
+			}
 		}
 		for _, f := range options.ContextFiles {
 			addFile(&contextFiles, f)
 		}
 		return ContextRegions{
-			Layout:     CacheLayoutLadder,
-			Files:      append(append([]string{}, layerFiles...), contextFiles...),
-			LayerCount: len(layerFiles),
+			Layout:       CacheLayoutLadder,
+			Files:        append(append([]string{}, layerFiles...), contextFiles...),
+			LayerCount:   len(layerFiles),
+			LineageCount: lineageCount,
 		}
 	}
 

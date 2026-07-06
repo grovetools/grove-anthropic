@@ -31,36 +31,42 @@ func TestStreamLadderByteIdentity(t *testing.T) {
 		system = "you are the oracle"
 		mt     = int64(4096)
 	)
-	layers := []string{"00-base.xml", "01-delta.xml"}
+	// Layers carry a leading inherited-lineage prefix (K1): the first two layers
+	// are lineage-sourced (inherited + dep-transcript), the third is the child's
+	// own base. This exercises the lineage-boundary breakpoint on BOTH branches
+	// so ladder≡stream stays true when lineage layers are present.
+	layers := []string{"00-inherited.xml", "01-dep-transcript.xml", "02-base.xml"}
+	const lineageLayers = 2
 	contexts := []string{"include-a.md", "include-b.md"}
 	history := []string{"<turn>q1/a1</turn>", "<turn>q2/a2</turn>", "<turn>q3/a3</turn>"}
-	// Uploaded doc IDs are shared by both layouts: 2 layers + 2 context docs,
+	// Uploaded doc IDs are shared by both layouts: 3 layers + 2 context docs,
 	// in that order (stream uploads only Path-bearing items in item order).
-	fileIDs := []string{"id-l0", "id-l1", "id-c0", "id-c1"}
+	fileIDs := []string{"id-l0", "id-l1", "id-l2", "id-c0", "id-c1"}
 
 	for _, ttl := range []string{"", CacheTTL5m, CacheTTL1h} {
 		t.Run("ttl="+ttl, func(t *testing.T) {
 			ladderReq := GenerateRequest{
 				Model: model, Prompt: prompt, SystemPrompt: system, MaxTokens: mt, CacheTTL: ttl,
 				Regions: ContextRegions{
-					Layout:     CacheLayoutLadder,
-					Files:      append(append([]string{}, layers...), contexts...),
-					LayerCount: len(layers),
+					Layout:       CacheLayoutLadder,
+					Files:        append(append([]string{}, layers...), contexts...),
+					LayerCount:   len(layers),
+					LineageCount: lineageLayers,
 				},
 				HistoryBlocks: history,
 			}
 
 			// Stream-at-head: every layer at the head, context docs after the
 			// last layer, then the exchanges. HeadAnchor pins BP2 to the last
-			// layer (index 1).
+			// layer (index 2); the lineage boundary lands on index 1.
 			items := []StreamItem{
-				layerItem(layers[0]), layerItem(layers[1]),
+				layerItem(layers[0]), layerItem(layers[1]), layerItem(layers[2]),
 				contextItem(contexts[0]), contextItem(contexts[1]),
 				historyItem(history[0]), historyItem(history[1]), historyItem(history[2]),
 			}
 			streamReq := GenerateRequest{
 				Model: model, Prompt: prompt, SystemPrompt: system, MaxTokens: mt, CacheTTL: ttl,
-				Regions: ContextRegions{Layout: CacheLayoutStream, Items: items, HeadAnchor: 1},
+				Regions: ContextRegions{Layout: CacheLayoutStream, Items: items, HeadAnchor: 2, LineageCount: lineageLayers},
 			}
 
 			ladderJSON, err := json.Marshal(buildMessageParams(ladderReq, fileIDs))
@@ -79,18 +85,20 @@ func TestStreamLadderByteIdentity(t *testing.T) {
 			// TTL) sequence for the two layouts.
 			ladderPlan, err := DescribeRequest(RequestOptions{
 				Model: model, Prompt: prompt, SystemPrompt: system, CacheTTL: ttl,
-				CacheLayout:   CacheLayoutLadder,
-				LayerFiles:    layers,
-				ContextFiles:  contexts,
-				HistoryBlocks: history,
+				CacheLayout:       CacheLayoutLadder,
+				LayerFiles:        layers,
+				LineageLayerCount: lineageLayers,
+				ContextFiles:      contexts,
+				HistoryBlocks:     history,
 			})
 			if err != nil {
 				t.Fatalf("DescribeRequest ladder: %v", err)
 			}
 			streamPlan, err := DescribeRequest(RequestOptions{
 				Model: model, Prompt: prompt, SystemPrompt: system, CacheTTL: ttl,
-				CacheLayout: CacheLayoutStream,
-				Stream:      items,
+				CacheLayout:       CacheLayoutStream,
+				LineageLayerCount: lineageLayers,
+				Stream:            items,
 			})
 			if err != nil {
 				t.Fatalf("DescribeRequest stream: %v", err)

@@ -23,6 +23,15 @@ func ladderRegions(layerCount, extraCount int) ContextRegions {
 	return ContextRegions{Layout: CacheLayoutLadder, Files: files, LayerCount: layerCount}
 }
 
+// ladderRegionsLineage is ladderRegions with a leading lineage prefix of
+// lineageCount layer docs (K1) — the count computeBreakpoints uses to place the
+// lineage-boundary breakpoint.
+func ladderRegionsLineage(layerCount, extraCount, lineageCount int) ContextRegions {
+	r := ladderRegions(layerCount, extraCount)
+	r.LineageCount = lineageCount
+	return r
+}
+
 func TestComputeBreakpointsLadder(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -42,6 +51,12 @@ func TestComputeBreakpointsLadder(t *testing.T) {
 		{"zero layers, system + history only", ladderRegions(0, 2), true, true, false, true, nil, true},
 		{"zero layers, nothing cacheable", ladderRegions(0, 0), false, false, false, false, nil, false},
 		{"noCache kills everything", ladderRegions(3, 1), true, true, true, false, nil, false},
+		// K1 lineage-boundary breakpoint cases.
+		{"lineage prefix: boundary + last-layer + system + history (4 of 4)", ladderRegionsLineage(4, 1, 2), true, true, false, true, []int{1, 3}, true},
+		{"lineage prefix, no system/history: boundary + last-layer", ladderRegionsLineage(4, 0, 2), false, false, false, false, []int{1, 3}, false},
+		{"single lineage layer of many", ladderRegionsLineage(3, 0, 1), false, false, false, false, []int{0, 2}, false},
+		{"lineage == all layers: boundary coincides, no extra breakpoint", ladderRegionsLineage(3, 0, 3), false, false, false, false, []int{2}, false},
+		{"lineage prefix but noCache kills everything", ladderRegionsLineage(4, 1, 2), true, true, true, false, nil, false},
 	}
 
 	for _, tt := range tests {
@@ -91,6 +106,37 @@ func TestComputeBreakpointsBudget(t *testing.T) {
 			}
 		}
 	}
+	// Ladder + lineage boundary (K1): the boundary claims the 4th slot, so the
+	// budget rises to exactly 4 — never over. Sweep lineage counts across layer
+	// shapes; the boundary only appears as a distinct BP when it is a STRICT
+	// prefix (0 < lineage < layers), and its index is always in range.
+	for layers := 1; layers <= 6; layers++ {
+		for lineage := 0; lineage <= layers; lineage++ {
+			for _, hasSystem := range bools {
+				for _, hasHistory := range bools {
+					plan := computeBreakpoints(ladderRegionsLineage(layers, 0, lineage), hasSystem, hasHistory, false)
+					if plan.count() > 4 {
+						t.Errorf("ladder+lineage layers=%d lineage=%d sys=%v hist=%v: %d breakpoints (>4, over budget)",
+							layers, lineage, hasSystem, hasHistory, plan.count())
+					}
+					strictPrefix := lineage > 0 && lineage < layers
+					if strictPrefix && !plan.Docs[lineage-1] {
+						t.Errorf("ladder+lineage layers=%d lineage=%d: missing boundary breakpoint at %d", layers, lineage, lineage-1)
+					}
+					if !strictPrefix && plan.count() > 3 {
+						t.Errorf("ladder+lineage layers=%d lineage=%d: no strict prefix yet %d breakpoints (>3)",
+							layers, lineage, plan.count())
+					}
+					for i := range plan.Docs {
+						if i < 0 || i >= layers {
+							t.Errorf("ladder+lineage layers=%d: out-of-range doc index %d", layers, i)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Legacy budget: never marks system/history, docs capped at 2.
 	for total := 0; total <= 6; total++ {
 		for stable := 0; stable <= total; stable++ {
@@ -127,6 +173,48 @@ func TestComputeBreakpointsLegacyMatchesHistorical(t *testing.T) {
 		if !equalInts(indices(plan.Docs), indices(want)) {
 			t.Errorf("shape %+v: Docs = %v, want historical %v", s, indices(plan.Docs), indices(want))
 		}
+	}
+}
+
+// TestDescribeRequestLineageBoundary is the observability check (K1): with a
+// leading inherited-lineage prefix, DescribeRequest must mark the LAST lineage
+// layer entry Breakpoint:true at the request TTL — that manifest entry is what
+// the tend e2e / flow manifest reads to confirm sibling prefix-sharing. The
+// child's own last layer keeps its breakpoint; the earlier lineage layers do
+// not.
+func TestDescribeRequestLineageBoundary(t *testing.T) {
+	entries, err := DescribeRequest(RequestOptions{
+		Model: "m", Prompt: "vol", SystemPrompt: "sys", CacheTTL: CacheTTL1h,
+		CacheLayout:       CacheLayoutLadder,
+		LayerFiles:        []string{"00-inherited.xml", "01-dep-transcript.xml", "02-base.xml"},
+		LineageLayerCount: 2,
+		ContextFiles:      []string{"ctx.md"},
+		HistoryBlocks:     []string{"<turn>q1/a1</turn>"},
+	})
+	if err != nil {
+		t.Fatalf("DescribeRequest: %v", err)
+	}
+	byPath := map[string]RequestPlanEntry{}
+	for _, e := range entries {
+		if e.Path != "" {
+			byPath[e.Path] = e
+		}
+	}
+	// Last lineage layer carries the boundary breakpoint at the request TTL.
+	if e := byPath["01-dep-transcript.xml"]; !e.Breakpoint || e.TTL != CacheTTL1h || e.Kind != RequestBlockLayer {
+		t.Errorf("last lineage layer entry = %+v, want Kind=layer Breakpoint=true TTL=1h", e)
+	}
+	// Earlier lineage layer: no breakpoint.
+	if e := byPath["00-inherited.xml"]; e.Breakpoint {
+		t.Errorf("first lineage layer must not carry a breakpoint: %+v", e)
+	}
+	// Child's own last layer keeps its breakpoint.
+	if e := byPath["02-base.xml"]; !e.Breakpoint || e.TTL != CacheTTL1h {
+		t.Errorf("last layer entry = %+v, want Breakpoint=true TTL=1h", e)
+	}
+	// Trailing context doc never carries its own breakpoint.
+	if e := byPath["ctx.md"]; e.Breakpoint {
+		t.Errorf("trailing context doc must not carry a breakpoint: %+v", e)
 	}
 }
 
