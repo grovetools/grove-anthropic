@@ -19,6 +19,20 @@ import (
 const (
 	CacheLayoutLegacy = "legacy"
 	CacheLayoutLadder = "ladder"
+	// CacheLayoutStream is the append-only "stream" layout (spec 27). Instead
+	// of segregating ALL layer documents above ALL dialogue (the ladder),
+	// stream carries one ordered, heterogeneous sequence of items in Stream:
+	// head-region layers, then head-region context documents, then the
+	// exchanges — with any layer widened mid-chat interleaved immediately after
+	// the exchange that pulled it in. Nothing is ever inserted mid-stream, so a
+	// widening turn writes only the new bytes instead of re-uploading the whole
+	// dialogue at the 1h-write premium (the "widen tax"). Breakpoints: system
+	// (BP1) → last head-region LAYER item (BP2 — HeadAnchor) → last stored
+	// layer/history item (BP3); the volatile Prompt is never cached. With every
+	// layer anchored at the head and context items placed after the last layer,
+	// stream is byte-identical to the ladder ("stream-at-head" equivalence),
+	// which is the free migration path for existing ladder chats.
+	CacheLayoutStream = "stream"
 )
 
 // Cache TTL names for RequestOptions.CacheTTL.
@@ -93,10 +107,28 @@ type RequestOptions struct {
 	// resolution for direct CLI callers.
 	HotContextFile  string
 	ColdContextFile string
+	// Stream is the ordered, heterogeneous item sequence for the stream layout
+	// (spec 27), replacing the LayerFiles+ContextFiles+HistoryBlocks split.
+	// Under CacheLayoutStream every document and history block travels here in
+	// exact wire order, and LayerFiles/HistoryBlocks/ContextFiles/HotContextFile/
+	// ColdContextFile MUST be empty (enforced in validateCacheOptions). Ignored
+	// under legacy/ladder.
+	Stream []StreamItem
 	// For logging
 	Caller   string
 	JobID    string
 	PlanName string
+}
+
+// StreamItem is one block of the stream layout's ordered sequence (spec 27).
+// Kind is one of RequestBlockLayer / RequestBlockContext / RequestBlockHistory:
+// layer and context items carry Path (a file uploaded via the Files API);
+// history items carry Text (a pre-serialized <turn> block). The volatile
+// per-turn prompt is NOT a StreamItem — it stays in RequestOptions.Prompt.
+type StreamItem struct {
+	Kind string // RequestBlockLayer | RequestBlockContext | RequestBlockHistory
+	Path string // layer/context kinds: file uploaded via Files API
+	Text string // history kind: pre-serialized <turn> block
 }
 
 // effectiveCacheLayout resolves the layout, defaulting empty to legacy.
@@ -112,8 +144,22 @@ func (o RequestOptions) effectiveCacheLayout() string {
 func (o RequestOptions) validateCacheOptions() error {
 	switch o.CacheLayout {
 	case "", CacheLayoutLegacy, CacheLayoutLadder:
+	case CacheLayoutStream:
+		// Stream is the single ordered source of truth: every document/history
+		// block rides in Stream, so the split fields must be empty or the wire
+		// order is ambiguous.
+		if len(o.LayerFiles) > 0 || len(o.HistoryBlocks) > 0 || len(o.ContextFiles) > 0 || o.HotContextFile != "" || o.ColdContextFile != "" {
+			return fmt.Errorf("stream layout requires all documents in Stream; LayerFiles/HistoryBlocks/ContextFiles/HotContextFile/ColdContextFile must be empty")
+		}
+		for _, it := range o.Stream {
+			switch it.Kind {
+			case RequestBlockLayer, RequestBlockContext, RequestBlockHistory:
+			default:
+				return fmt.Errorf("invalid StreamItem kind %q (valid: %q, %q, %q)", it.Kind, RequestBlockLayer, RequestBlockContext, RequestBlockHistory)
+			}
+		}
 	default:
-		return fmt.Errorf("invalid CacheLayout %q (valid: %q, %q, or empty for legacy)", o.CacheLayout, CacheLayoutLegacy, CacheLayoutLadder)
+		return fmt.Errorf("invalid CacheLayout %q (valid: %q, %q, %q, or empty for legacy)", o.CacheLayout, CacheLayoutLegacy, CacheLayoutLadder, CacheLayoutStream)
 	}
 	switch o.CacheTTL {
 	case "", CacheTTL5m, CacheTTL1h:
@@ -137,6 +183,13 @@ type ContextRegions struct {
 	Files       []string
 	StableCount int // legacy only: cold-context + CLAUDE.md prefix length
 	LayerCount  int // ladder only: layer-document prefix length
+	// Items and HeadAnchor describe the stream layout (spec 27), valid only
+	// when Layout == CacheLayoutStream. Items is the ordered heterogeneous
+	// block sequence (layer/context documents + history text blocks);
+	// HeadAnchor is the index of the last head-region LAYER item (BP2's
+	// position), or -1 when there are no layer items.
+	Items      []StreamItem
+	HeadAnchor int
 }
 
 // assembleContextRegions builds the ordered document file list and region
@@ -167,6 +220,52 @@ func assembleContextRegions(options RequestOptions, workDir, hotContextFile, col
 		if !seen[absPath] {
 			seen[absPath] = true
 			*dst = append(*dst, path)
+		}
+	}
+
+	if options.effectiveCacheLayout() == CacheLayoutStream {
+		// Stream: preserve caller order exactly (position stability is the
+		// cache guarantee), deduping only Path-bearing items by abs path —
+		// keep the first occurrence, drop later dupes. History items always
+		// pass through untouched.
+		items := make([]StreamItem, 0, len(options.Stream))
+		for _, it := range options.Stream {
+			if it.Path != "" {
+				absPath, err := filepath.Abs(it.Path)
+				if err != nil {
+					absPath = it.Path
+				}
+				if seen[absPath] {
+					continue
+				}
+				seen[absPath] = true
+			}
+			items = append(items, it)
+		}
+		// HeadAnchor = index of the last layer item preceding the first history
+		// item (or the last layer item overall when there is no history). This
+		// is where BP2 sits; context items after it never move it. -1 ⇒ no
+		// layers ⇒ no head anchor.
+		firstHistory := -1
+		for i, it := range items {
+			if it.Kind == RequestBlockHistory {
+				firstHistory = i
+				break
+			}
+		}
+		headAnchor := -1
+		for i, it := range items {
+			if firstHistory >= 0 && i >= firstHistory {
+				break
+			}
+			if it.Kind == RequestBlockLayer {
+				headAnchor = i
+			}
+		}
+		return ContextRegions{
+			Layout:     CacheLayoutStream,
+			Items:      items,
+			HeadAnchor: headAnchor,
 		}
 	}
 
@@ -322,6 +421,21 @@ func DescribeRequest(options RequestOptions) ([]RequestPlanEntry, error) {
 			return options.CacheTTL
 		}
 		return ""
+	}
+
+	// Stream layout: emit one entry per ordered item (in true wire order),
+	// then the volatile turn. Breakpoints come from plan.Docs indexed by item
+	// position — see computeBreakpoints' stream branch.
+	if regions.Layout == CacheLayoutStream {
+		entries := make([]RequestPlanEntry, 0, len(regions.Items)+2)
+		if options.SystemPrompt != "" {
+			entries = append(entries, RequestPlanEntry{Kind: RequestBlockSystem, Breakpoint: plan.System, TTL: ttlFor(plan.System)})
+		}
+		for i, it := range regions.Items {
+			entries = append(entries, RequestPlanEntry{Kind: it.Kind, Path: it.Path, Breakpoint: plan.Docs[i], TTL: ttlFor(plan.Docs[i])})
+		}
+		entries = append(entries, RequestPlanEntry{Kind: RequestBlockTurn})
+		return entries, nil
 	}
 
 	entries := make([]RequestPlanEntry, 0, len(regions.Files)+len(history)+2)

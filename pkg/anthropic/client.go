@@ -73,9 +73,12 @@ type GenerateRequest struct {
 // (System/History are never set), ladder places up to 3 total (system + last
 // layer document + history block), keeping one spare.
 type breakpointPlan struct {
-	System  bool         // breakpoint on the system prompt block (ladder only)
-	Docs    map[int]bool // breakpoints on document indices into Regions.Files
-	History bool         // breakpoint on the LAST HistoryBlocks text block (ladder only)
+	System bool // breakpoint on the system prompt block (ladder/stream)
+	// Docs holds breakpoint positions. Under legacy/ladder it indexes document
+	// blocks (Regions.Files); under stream it indexes STREAM ITEMS
+	// (Regions.Items — text and doc alike), and History is unused.
+	Docs    map[int]bool
+	History bool // breakpoint on the LAST HistoryBlocks text block (ladder only)
 }
 
 // count returns the total number of breakpoints the plan places.
@@ -107,6 +110,28 @@ func (p breakpointPlan) count() int {
 func computeBreakpoints(regions ContextRegions, hasSystem, hasHistory, noCache bool) breakpointPlan {
 	plan := breakpointPlan{Docs: make(map[int]bool)}
 	if noCache {
+		return plan
+	}
+	if regions.Layout == CacheLayoutStream {
+		// Stream (spec 27): BP1 on system, BP2 on the last head-region LAYER
+		// item (HeadAnchor), BP3 on the last stored layer/history item. Docs
+		// here indexes STREAM ITEMS (text and doc alike); History is unused.
+		// Context items never carry a breakpoint — that keeps turn-1 stream
+		// byte-identical to the ladder, which also never breakpoints context
+		// docs. When BP3 coincides with HeadAnchor they dedupe to one map entry.
+		plan.System = hasSystem
+		if regions.HeadAnchor >= 0 {
+			plan.Docs[regions.HeadAnchor] = true
+		}
+		lastStored := -1
+		for i, it := range regions.Items {
+			if it.Kind == RequestBlockLayer || it.Kind == RequestBlockHistory {
+				lastStored = i
+			}
+		}
+		if lastStored >= 0 {
+			plan.Docs[lastStored] = true
+		}
 		return plan
 	}
 	if regions.Layout == CacheLayoutLadder {
@@ -229,28 +254,57 @@ func buildMessageParams(req GenerateRequest, fileIDs []string) anthropic.BetaMes
 	plan := computeBreakpoints(req.Regions, req.SystemPrompt != "", len(req.HistoryBlocks) > 0, req.NoCache)
 
 	contentBlocks := make([]anthropic.BetaContentBlockParamUnion, 0, 1+len(fileIDs)+len(req.HistoryBlocks))
-	for i, fileID := range fileIDs {
-		blk := anthropic.NewBetaDocumentBlock(anthropic.BetaFileDocumentSourceParam{
-			FileID: fileID,
-		})
-		if plan.Docs[i] {
-			blk.OfDocument.CacheControl = cacheControlParam(req.CacheTTL)
-		}
-		contentBlocks = append(contentBlocks, blk)
-	}
 
-	// Byte-stable dialogue history rides as one text block PER completed prior
-	// turn so cache matching — which happens at content-block boundaries —
-	// sees turn K's blocks repeated byte-identically at turn K+1 and only the
-	// newly appended turn re-writes. The single history breakpoint (ladder
-	// BP3) sits on the LAST history block; only the current turn (the Prompt
-	// block below) stays volatile.
-	for i, h := range req.HistoryBlocks {
-		blk := anthropic.NewBetaTextBlock(h)
-		if plan.History && i == len(req.HistoryBlocks)-1 {
-			blk.OfText.CacheControl = cacheControlParam(req.CacheTTL)
+	if req.Regions.Layout == CacheLayoutStream {
+		// Stream (spec 27): walk the ordered heterogeneous items, threading the
+		// uploaded Files-API IDs positionally across the Path-bearing
+		// (layer/context) items. plan.Docs indexes items directly, so a
+		// breakpoint lands on whichever block — document or history text — the
+		// plan marks (BP2 on the head anchor, BP3 on the last stored block).
+		fileIdx := 0
+		for i, it := range req.Regions.Items {
+			switch it.Kind {
+			case RequestBlockLayer, RequestBlockContext:
+				blk := anthropic.NewBetaDocumentBlock(anthropic.BetaFileDocumentSourceParam{
+					FileID: fileIDs[fileIdx],
+				})
+				fileIdx++
+				if plan.Docs[i] {
+					blk.OfDocument.CacheControl = cacheControlParam(req.CacheTTL)
+				}
+				contentBlocks = append(contentBlocks, blk)
+			case RequestBlockHistory:
+				blk := anthropic.NewBetaTextBlock(it.Text)
+				if plan.Docs[i] {
+					blk.OfText.CacheControl = cacheControlParam(req.CacheTTL)
+				}
+				contentBlocks = append(contentBlocks, blk)
+			}
 		}
-		contentBlocks = append(contentBlocks, blk)
+	} else {
+		for i, fileID := range fileIDs {
+			blk := anthropic.NewBetaDocumentBlock(anthropic.BetaFileDocumentSourceParam{
+				FileID: fileID,
+			})
+			if plan.Docs[i] {
+				blk.OfDocument.CacheControl = cacheControlParam(req.CacheTTL)
+			}
+			contentBlocks = append(contentBlocks, blk)
+		}
+
+		// Byte-stable dialogue history rides as one text block PER completed prior
+		// turn so cache matching — which happens at content-block boundaries —
+		// sees turn K's blocks repeated byte-identically at turn K+1 and only the
+		// newly appended turn re-writes. The single history breakpoint (ladder
+		// BP3) sits on the LAST history block; only the current turn (the Prompt
+		// block below) stays volatile.
+		for i, h := range req.HistoryBlocks {
+			blk := anthropic.NewBetaTextBlock(h)
+			if plan.History && i == len(req.HistoryBlocks)-1 {
+				blk.OfText.CacheControl = cacheControlParam(req.CacheTTL)
+			}
+			contentBlocks = append(contentBlocks, blk)
+		}
 	}
 
 	// Add the text prompt LAST so it stays outside the cacheable prefix.
@@ -286,8 +340,21 @@ func buildMessageParams(req GenerateRequest, fileIDs []string) anthropic.BetaMes
 func (c *Client) generateContentInternal(ctx context.Context, req GenerateRequest) (string, *anthropic.BetaUsage, error) {
 	// Upload context files first; document blocks reference the resulting
 	// Files-API IDs in region order (see buildMessageParams for the layout).
-	fileIDs := make([]string, 0, len(req.Regions.Files))
-	for _, filePath := range req.Regions.Files {
+	// Stream layout uploads only the Path-bearing items (layer/context) in
+	// item order — buildMessageParams threads these IDs positionally across
+	// those same items — while legacy/ladder upload Regions.Files wholesale.
+	var filePaths []string
+	if req.Regions.Layout == CacheLayoutStream {
+		for _, it := range req.Regions.Items {
+			if it.Path != "" {
+				filePaths = append(filePaths, it.Path)
+			}
+		}
+	} else {
+		filePaths = req.Regions.Files
+	}
+	fileIDs := make([]string, 0, len(filePaths))
+	for _, filePath := range filePaths {
 		metadata, err := uploadFile(ctx, &c.client, filePath)
 		if err != nil {
 			return "", nil, fmt.Errorf("uploading context file %s: %w", filePath, err)
