@@ -167,6 +167,15 @@ func ResolveAlias(model string) string {
 	return model
 }
 
+// IsAnthropicModel reports whether model (an ID or alias) is an Anthropic
+// Claude model — i.e. one that can be served directly by this package's client
+// rather than via a foreign provider facade. It resolves the alias first, then
+// checks the "claude" prefix, so both "claude-haiku-4-5" and
+// "claude-haiku-4-5-20251001" report true while "gemini-3-pro-preview" does not.
+func IsAnthropicModel(model string) bool {
+	return strings.HasPrefix(ResolveAlias(model), "claude")
+}
+
 // CurrentModels returns only non-legacy models (for TUI pickers, etc.).
 func CurrentModels() []Model {
 	var current []Model

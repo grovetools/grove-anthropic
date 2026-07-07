@@ -211,18 +211,26 @@ func cacheBreakpointIndices(total, stableCount int, noCache bool) map[int]bool {
 // req; RunWithUsage assembles them via assembleContextRegions.
 func (c *Client) GenerateContent(ctx context.Context, req GenerateRequest) (string, *anthropic.BetaUsage, error) {
 	startTime := time.Now()
-	requestID := os.Getenv("GROVE_REQUEST_ID")
-	contextInfo := grovecontext.GetContextInfo("")
-	caller := grovecontext.GetCaller()
 
 	// Execute the actual API call
 	responseText, usage, err := c.generateContentInternal(ctx, req)
 
-	// Log the request (success or failure)
+	logQuery(ctx, startTime, req.Model, grovecontext.GetCaller(), usage, req.CacheTTL, err)
+
+	return responseText, usage, err
+}
+
+// logQuery writes one query-log ledger entry for a completed request (success
+// or failure). It is shared by GenerateContent and the fan-out request path so
+// every Anthropic call this package makes lands in the same ledger with a
+// TTL-split cache-write accounting. caller/model come from the caller because
+// the fan-out path threads its own caller label and resolved model ID.
+func logQuery(ctx context.Context, startTime time.Time, model, caller string, usage *anthropic.BetaUsage, ttl string, err error) {
+	contextInfo := grovecontext.GetContextInfo("")
 	logEntry := logging.QueryLog{
 		Timestamp:    startTime,
-		RequestID:    requestID,
-		Model:        req.Model,
+		RequestID:    os.Getenv("GROVE_REQUEST_ID"),
+		Model:        model,
 		ResponseTime: time.Since(startTime).Seconds(),
 		Success:      err == nil,
 		WorkingDir:   contextInfo.WorkingDir,
@@ -233,7 +241,7 @@ func (c *Client) GenerateContent(ctx context.Context, req GenerateRequest) (stri
 	}
 
 	if usage != nil {
-		write5m, write1h := splitCacheWrites(usage, req.CacheTTL)
+		write5m, write1h := splitCacheWrites(usage, ttl)
 		logEntry.InputTokens = usage.InputTokens
 		logEntry.OutputTokens = usage.OutputTokens
 		logEntry.CacheCreationTokens = usage.CacheCreationInputTokens
@@ -243,7 +251,7 @@ func (c *Client) GenerateContent(ctx context.Context, req GenerateRequest) (stri
 		if totalInput := usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens; totalInput > 0 {
 			logEntry.CacheHitRate = float64(usage.CacheReadInputTokens) / float64(totalInput) * 100
 		}
-		logEntry.EstimatedCost = logging.EstimateCostWithCacheSplit(req.Model, usage.InputTokens, usage.OutputTokens, write5m, write1h, usage.CacheReadInputTokens)
+		logEntry.EstimatedCost = logging.EstimateCostWithCacheSplit(model, usage.InputTokens, usage.OutputTokens, write5m, write1h, usage.CacheReadInputTokens)
 	}
 
 	if err != nil {
@@ -253,8 +261,6 @@ func (c *Client) GenerateContent(ctx context.Context, req GenerateRequest) (stri
 	if logErr := logging.GetLogger().Log(logEntry); logErr != nil {
 		ulog.Warn("Failed to write to query log").Err(logErr).Log(ctx)
 	}
-
-	return responseText, usage, err
 }
 
 // buildMessageParams assembles the full message parameters for a request from
@@ -386,7 +392,15 @@ func (c *Client) generateContentInternal(ctx context.Context, req GenerateReques
 
 	params := buildMessageParams(req, fileIDs)
 
-	// Use streaming API to support longer requests without timeout
+	return c.streamMessage(ctx, params)
+}
+
+// streamMessage sends already-assembled message params to the streaming
+// Messages API and accumulates the response text + usage. Streaming is used so
+// long generations (>10 min, high max_tokens) don't time out. Split out of
+// generateContentInternal so the fan-out request path — which builds its params
+// from a pre-uploaded shared prefix — can reuse the exact same transport.
+func (c *Client) streamMessage(ctx context.Context, params anthropic.BetaMessageNewParams) (string, *anthropic.BetaUsage, error) {
 	stream := c.client.Beta.Messages.NewStreaming(ctx, params)
 
 	var fullText strings.Builder
