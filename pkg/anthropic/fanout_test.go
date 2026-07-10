@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
 // withDummyKey sets a throwaway API key for the duration of a test so
@@ -85,7 +87,7 @@ func TestSharedPrefix_BuildRequestLadderLayout(t *testing.T) {
 		t.Fatalf("NewSharedPrefixFromFiles: %v", err)
 	}
 
-	req := p.buildRequest("do the task")
+	req := p.buildRequest(nil, "do the task")
 	if req.Regions.Layout != CacheLayoutLadder {
 		t.Errorf("layout = %q, want ladder", req.Regions.Layout)
 	}
@@ -134,6 +136,73 @@ func TestSharedPrefix_BuildRequestLadderLayout(t *testing.T) {
 	}
 	if tail.OfText.CacheControl.Type != "" {
 		t.Errorf("task prompt must not be cached")
+	}
+}
+
+// TestSharedPrefix_BuildRequestWithHistory verifies the multi-turn layout:
+// the document prefix + first (user) turn are merged into the leading user
+// message (so the cached prefix stays byte-identical to turn 0), each prior
+// turn keeps its role, and the new taskPrompt is the final user turn.
+func TestSharedPrefix_BuildRequestWithHistory(t *testing.T) {
+	withDummyKey(t)
+
+	files := []string{"/tmp/cold", "/tmp/hot"}
+	p, err := NewSharedPrefixFromFiles("", files, SharedPrefixOptions{
+		Model: "claude-haiku-4-5",
+		TTL:   CacheTTL1h,
+	})
+	if err != nil {
+		t.Fatalf("NewSharedPrefixFromFiles: %v", err)
+	}
+
+	history := []MessageTurn{
+		{Role: MessageRoleUser, Content: "turn-0 suffix"},
+		{Role: MessageRoleAssistant, Content: "turn-0 proposal"},
+	}
+	req := p.buildRequest(history, "please revise")
+	if len(req.History) != 2 {
+		t.Fatalf("expected 2 history turns on request, got %d", len(req.History))
+	}
+
+	fakeIDs := []string{"file_0", "file_1"}
+	params := buildMessageParams(req, fakeIDs)
+
+	// user(docs + turn-0 user) → assistant(turn-0) → user(new turn).
+	if len(params.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(params.Messages))
+	}
+
+	lead := params.Messages[0]
+	if lead.Role != anthropic.BetaMessageParamRoleUser {
+		t.Errorf("message 0 role = %q, want user", lead.Role)
+	}
+	// 2 documents + the merged turn-0 user text block.
+	if len(lead.Content) != len(files)+1 {
+		t.Fatalf("leading message content blocks = %d, want %d", len(lead.Content), len(files)+1)
+	}
+	if lead.Content[len(files)-1].OfDocument == nil || lead.Content[len(files)-1].OfDocument.CacheControl.Type == "" {
+		t.Errorf("last document in the leading message should carry the prefix breakpoint")
+	}
+	if tail := lead.Content[len(files)]; tail.OfText == nil || tail.OfText.Text != "turn-0 suffix" {
+		t.Errorf("turn-0 user text should be merged after the documents, got %+v", tail)
+	}
+
+	if params.Messages[1].Role != anthropic.BetaMessageParamRoleAssistant {
+		t.Errorf("message 1 role = %q, want assistant", params.Messages[1].Role)
+	}
+	if got := params.Messages[1].Content[0].OfText; got == nil || got.Text != "turn-0 proposal" {
+		t.Errorf("assistant turn content = %+v", params.Messages[1].Content[0])
+	}
+
+	final := params.Messages[2]
+	if final.Role != anthropic.BetaMessageParamRoleUser {
+		t.Errorf("final message role = %q, want user", final.Role)
+	}
+	if got := final.Content[0].OfText; got == nil || got.Text != "please revise" {
+		t.Errorf("final user turn content = %+v", final.Content[0])
+	}
+	if final.Content[0].OfText.CacheControl.Type != "" {
+		t.Errorf("final user turn must not be cached")
 	}
 }
 

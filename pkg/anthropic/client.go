@@ -58,8 +58,18 @@ type GenerateRequest struct {
 	SystemPrompt  string
 	Regions       ContextRegions
 	HistoryBlocks []string
-	MaxTokens     int64
-	NoCache       bool
+	// History carries prior conversation turns for a genuine multi-turn request
+	// (SharedPrefix.RequestWithHistory). When non-empty, the FIRST turn (a user
+	// turn) is merged with the document blocks into the leading user message —
+	// so the cached document prefix stays byte-identical to a turn-0 request —
+	// the remaining turns become their own role-tagged messages, and Prompt is
+	// the final user turn. Empty ⇒ the historical single-user-message layout
+	// (documents + HistoryBlocks + Prompt all in one user message). History and
+	// HistoryBlocks serve different designs (multi-message dialogue vs. byte-
+	// stable text-block history) and are not used together.
+	History   []MessageTurn
+	MaxTokens int64
+	NoCache   bool
 	// CacheTTL is the TTL applied to every breakpoint in the request — one
 	// TTL for all (spec 19 D2). "", CacheTTL5m, or CacheTTL1h; empty leaves
 	// the SDK param's TTL field unset so it is not serialized (omitzero),
@@ -335,17 +345,33 @@ func buildMessageParams(req GenerateRequest, fileIDs []string) anthropic.BetaMes
 		}
 	}
 
-	// Add the text prompt LAST so it stays outside the cacheable prefix.
-	contentBlocks = append(contentBlocks, anthropic.NewBetaTextBlock(req.Prompt))
+	// Assemble the message list. Without History this is the historical single
+	// user message: document/context/history-text blocks, then the volatile
+	// Prompt block LAST so it stays outside the cacheable prefix. With History
+	// (multi-turn refinement) the leading user message merges the document
+	// blocks with the first (user) turn — keeping the cached document prefix
+	// byte-identical to a turn-0 request, since the prefix breakpoint sits on
+	// the last document — the remaining turns become their own role-tagged
+	// messages, and Prompt is appended as the final user turn.
+	var messages []anthropic.BetaMessageParam
+	if len(req.History) > 0 {
+		lead := append(contentBlocks, anthropic.NewBetaTextBlock(req.History[0].Content))
+		messages = append(messages, anthropic.NewBetaUserMessage(lead...))
+		for _, t := range req.History[1:] {
+			messages = append(messages, betaMessageForTurn(t))
+		}
+		messages = append(messages, anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(req.Prompt)))
+	} else {
+		contentBlocks = append(contentBlocks, anthropic.NewBetaTextBlock(req.Prompt))
+		messages = []anthropic.BetaMessageParam{anthropic.NewBetaUserMessage(contentBlocks...)}
+	}
 
 	// Construct the message parameters
 	params := anthropic.BetaMessageNewParams{
 		Model:     anthropic.Model(req.Model),
 		MaxTokens: req.MaxTokens,
-		Messages: []anthropic.BetaMessageParam{
-			anthropic.NewBetaUserMessage(contentBlocks...),
-		},
-		Betas: []anthropic.AnthropicBeta{anthropic.AnthropicBetaFilesAPI2025_04_14},
+		Messages:  messages,
+		Betas:     []anthropic.AnthropicBeta{anthropic.AnthropicBetaFilesAPI2025_04_14},
 	}
 
 	// Add system prompt if provided; under ladder it carries BP1.
@@ -361,6 +387,20 @@ func buildMessageParams(req GenerateRequest, fileIDs []string) anthropic.BetaMes
 	}
 
 	return params
+}
+
+// betaMessageForTurn renders one replayed conversation turn as an SDK message
+// with its role. An assistant turn becomes an assistant message; anything else
+// (a user turn) becomes a user message.
+func betaMessageForTurn(t MessageTurn) anthropic.BetaMessageParam {
+	block := anthropic.NewBetaTextBlock(t.Content)
+	if t.Role == MessageRoleAssistant {
+		return anthropic.BetaMessageParam{
+			Role:    anthropic.BetaMessageParamRoleAssistant,
+			Content: []anthropic.BetaContentBlockParamUnion{block},
+		}
+	}
+	return anthropic.NewBetaUserMessage(block)
 }
 
 // generateContentInternal contains the core API call logic.

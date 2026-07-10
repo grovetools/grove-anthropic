@@ -12,6 +12,22 @@ import (
 	"github.com/grovetools/grove-anthropic/pkg/models"
 )
 
+// Message roles for a MessageTurn in a multi-turn SharedPrefix request.
+const (
+	MessageRoleUser      = "user"
+	MessageRoleAssistant = "assistant"
+)
+
+// MessageTurn is one completed conversation turn replayed by
+// SharedPrefix.RequestWithHistory: a Role (MessageRoleUser or
+// MessageRoleAssistant) and its text Content. A history slice is the prior
+// dialogue in order, starting with the turn-0 user turn — replayed verbatim
+// between the cached prefix and the new final user turn.
+type MessageTurn struct {
+	Role    string
+	Content string
+}
+
 // DefaultFanoutMaxTokens is the max_tokens applied to fan-out requests when the
 // caller leaves SharedPrefixOptions.MaxTokens at zero — matching the CLI's
 // `request --max-tokens` default so a fan-out generation is not truncated
@@ -173,8 +189,21 @@ func (p *SharedPrefix) Model() string { return p.model }
 // generated text plus its usage (cache_creation_input_tokens /
 // cache_read_input_tokens are surfaced on the UsageResult). The first Request
 // writes the prefix cache; later Requests block until it has returned, then
-// cache-read the prefix. taskPrompt must be non-empty.
+// cache-read the prefix. taskPrompt must be non-empty. It is the single-turn
+// case of RequestWithHistory (empty history).
 func (p *SharedPrefix) Request(ctx context.Context, taskPrompt string) (string, *UsageResult, error) {
+	return p.RequestWithHistory(ctx, nil, taskPrompt)
+}
+
+// RequestWithHistory issues a task request that replays prior conversation
+// turns between the cached prefix and a new final user turn — the multi-turn
+// refinement case. history is the completed dialogue in order, starting with
+// the turn-0 user turn (its content is merged with the cached documents into
+// the leading user message, so the cached document prefix stays byte-identical
+// to a turn-0 Request and is cache-READ within the TTL); taskPrompt is the new
+// final user turn. Caching and the first-writer serialization gate work exactly
+// as in Request. taskPrompt must be non-empty; empty history ⇒ single-turn.
+func (p *SharedPrefix) RequestWithHistory(ctx context.Context, history []MessageTurn, taskPrompt string) (string, *UsageResult, error) {
 	if taskPrompt == "" {
 		return "", nil, fmt.Errorf("task prompt cannot be empty")
 	}
@@ -186,7 +215,7 @@ func (p *SharedPrefix) Request(ctx context.Context, taskPrompt string) (string, 
 
 	if amFirst {
 		// The designated writer: upload the prefix + run, then release siblings.
-		text, usage, err := p.do(ctx, taskPrompt)
+		text, usage, err := p.do(ctx, history, taskPrompt)
 		close(p.ready)
 		return text, usage, err
 	}
@@ -198,13 +227,14 @@ func (p *SharedPrefix) Request(ctx context.Context, taskPrompt string) (string, 
 	case <-ctx.Done():
 		return "", nil, ctx.Err()
 	}
-	return p.do(ctx, taskPrompt)
+	return p.do(ctx, history, taskPrompt)
 }
 
 // buildRequest assembles the ladder GenerateRequest for one task against the
 // prefix: every prefix document is a layer (breakpoint on the last), the system
-// prompt carries BP1 when present, and taskPrompt is the volatile block.
-func (p *SharedPrefix) buildRequest(taskPrompt string) GenerateRequest {
+// prompt carries BP1 when present, history replays prior turns (empty ⇒ a plain
+// single-turn request), and taskPrompt is the volatile final block.
+func (p *SharedPrefix) buildRequest(history []MessageTurn, taskPrompt string) GenerateRequest {
 	return GenerateRequest{
 		Model:        p.model,
 		Prompt:       taskPrompt,
@@ -214,17 +244,18 @@ func (p *SharedPrefix) buildRequest(taskPrompt string) GenerateRequest {
 			Files:      p.ctxFiles,
 			LayerCount: len(p.ctxFiles),
 		},
+		History:   history,
 		MaxTokens: p.maxTokens,
 		CacheTTL:  p.ttl,
 	}
 }
 
-func (p *SharedPrefix) do(ctx context.Context, taskPrompt string) (string, *UsageResult, error) {
+func (p *SharedPrefix) do(ctx context.Context, history []MessageTurn, taskPrompt string) (string, *UsageResult, error) {
 	if err := p.ensureUploaded(ctx); err != nil {
 		return "", nil, err
 	}
 
-	req := p.buildRequest(taskPrompt)
+	req := p.buildRequest(history, taskPrompt)
 	params := buildMessageParams(req, p.fileIDs)
 
 	startTime := time.Now()
