@@ -422,8 +422,13 @@ func (c *Client) streamMessage(ctx context.Context, params anthropic.BetaMessage
 		}
 	}
 
-	if stream.Err() != nil {
-		return "", nil, fmt.Errorf("stream error: %w", stream.Err())
+	if err := stream.Err(); err != nil {
+		// API status errors get condensed so the API's message ("prompt is too
+		// long: ...") leads the text instead of the URL + raw-JSON dump.
+		if condensed := condenseAPIError(err); condensed != err {
+			return "", nil, condensed
+		}
+		return "", nil, fmt.Errorf("stream error: %w", err)
 	}
 
 	responseText := fullText.String()
