@@ -193,6 +193,7 @@ func hasRule(rungs []RuleRung, rule string) bool {
 	}
 	return false
 }
+
 func keysOf(m map[string]CommandLadder) []string {
 	var k []string
 	for s := range m {
