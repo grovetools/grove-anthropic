@@ -20,9 +20,16 @@ const DefaultModel = "claude-sonnet-4-6-20260115"
 // DefaultAlias is the alias for the default model.
 const DefaultAlias = "claude-sonnet-4-6"
 
-// DefaultAgentAlias is the default model alias for claude agent jobs
-// (interactive/headless/isolated). Distinct from DefaultAlias, which is
-// the oneshot/chat planning default.
+// DefaultAgentAlias is the model grove recommends for claude agent jobs
+// (interactive/headless/isolated) — the one callers pass explicitly when they
+// want the most capable agent. Distinct from DefaultAlias, which is the
+// oneshot/chat planning default.
+//
+// It is NOT a prediction of what the claude CLI runs when no model is passed:
+// the CLI self-selects from its own configuration, which flow reads directly
+// (see LatestAliasForFamily and flow's resolveClaudeCLIModel). Using this
+// constant as that label is what made agent jobs report "claude-fable-5" while
+// actually running Opus.
 const DefaultAgentAlias = "claude-fable-5"
 
 // LongContextThreshold is the token count above which long context pricing applies.
@@ -183,6 +190,31 @@ func ResolveAlias(model string) string {
 // "claude-haiku-4-5-20251001" report true while "gemini-3-pro-preview" does not.
 func IsAnthropicModel(model string) bool {
 	return strings.HasPrefix(ResolveAlias(model), "claude")
+}
+
+// LatestAliasForFamily returns the alias of the newest non-legacy model in a
+// Claude family ("opus", "sonnet", "haiku", "fable"), matching Models() order —
+// which is maintained newest-first within each family. It resolves the bare
+// family names a CLI accepts (claude's --model, or its `model` setting) to a
+// concrete registry alias, so callers that need to name "whatever Opus is
+// current" don't hardcode a version that goes stale on the next release.
+//
+// Returns ("", false) for an unknown family or one with only legacy entries.
+func LatestAliasForFamily(family string) (alias string, ok bool) {
+	family = strings.ToLower(strings.TrimSpace(family))
+	if family == "" {
+		return "", false
+	}
+	prefix := "claude-" + family + "-"
+	for _, m := range Models() {
+		if m.Legacy || m.Alias == "" {
+			continue
+		}
+		if strings.HasPrefix(m.Alias, prefix) {
+			return m.Alias, true
+		}
+	}
+	return "", false
 }
 
 // CurrentModels returns only non-legacy models (for TUI pickers, etc.).
