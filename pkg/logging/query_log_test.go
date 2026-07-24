@@ -27,6 +27,7 @@ func TestModelPrices(t *testing.T) {
 	}{
 		// Tier 1: exact table IDs / aliases.
 		{"fable-5 exact", "claude-fable-5", belowThreshold, 10.00, 50.00, true},
+		{"opus-5 exact", "claude-opus-5", belowThreshold, 5.00, 25.00, true},
 		{"opus-4-8 exact", "claude-opus-4-8", belowThreshold, 5.00, 25.00, true},
 		{"sonnet-4-6 exact id", "claude-sonnet-4-6-20260115", belowThreshold, 3.00, 15.00, true},
 		{"haiku-4-5 alias", "claude-haiku-4-5", belowThreshold, 1.00, 5.00, true},
@@ -34,6 +35,7 @@ func TestModelPrices(t *testing.T) {
 		// Tier 2: dated snapshots not in the table resolve by family.
 		{"future sonnet-4-6 snapshot", "claude-sonnet-4-6-20991231", belowThreshold, 3.00, 15.00, true},
 		{"future opus-4-8 snapshot", "claude-opus-4-8-20991231", belowThreshold, 5.00, 25.00, true},
+		{"future opus-5 snapshot", "claude-opus-5-20991231", belowThreshold, 5.00, 25.00, true},
 		{"future fable-5 snapshot", "claude-fable-5-20991231", belowThreshold, 10.00, 50.00, true},
 
 		// Tier 3: unknown model → default fallback, not known.

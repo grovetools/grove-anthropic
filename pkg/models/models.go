@@ -41,6 +41,15 @@ func Models() []Model {
 			Output:   50.00,
 			Legacy:   false,
 		},
+		{
+			ID:       "claude-opus-5",
+			Alias:    "claude-opus-5",
+			Provider: "Anthropic",
+			Note:     "Opus 5 - for complex agentic coding and enterprise work",
+			Input:    5.00,
+			Output:   25.00,
+			Legacy:   false,
+		},
 		// Claude 4.8 models
 		{
 			ID:       "claude-opus-4-8",
